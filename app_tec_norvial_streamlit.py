@@ -686,12 +686,15 @@ def load_contractor_logo() -> Image.Image | None:
         return None
 
     image = Image.open(CONTRACTOR_LOGO_PATH).convert("RGBA")
-    background = Image.new("RGBA", image.size, (255, 255, 255, 255))
-    diff = ImageChops.difference(image, background)
-    bbox = diff.getbbox()
+    alpha_channel = image.getchannel("A")
+    bbox = alpha_channel.point(lambda value: 255 if value > 20 else 0).getbbox()
+    if bbox is None:
+        background = Image.new("RGBA", image.size, (255, 255, 255, 255))
+        diff = ImageChops.difference(image, background)
+        bbox = diff.getbbox()
     if bbox:
         left, top, right, bottom = bbox
-        padding = 24
+        padding = 8
         left = max(0, left - padding)
         top = max(0, top - padding)
         right = min(image.width, right + padding)
@@ -706,7 +709,9 @@ def render_contractor_branding() -> None:
     if logo_image is None:
         return
 
-    st.image(logo_image, use_container_width=True)
+    left_col, center_col, right_col = st.columns([0.12, 0.76, 0.12])
+    with center_col:
+        st.image(logo_image, use_container_width=True)
 
 
 def navigate_to(page: str) -> None:
@@ -733,29 +738,22 @@ def get_requested_page() -> str | None:
 def render_home_page(current_user: dict | None) -> None:
     user_label = current_user["full_name"] if current_user else "Equipo CIDATT"
     role_label = current_user["role_label"] if current_user else "Acceso directo"
-    hero_col, brand_col = st.columns([1.35, 0.65], gap="large")
-    with hero_col:
-        st.markdown(
-            build_hero_panel(
-                title="Centro de control operativo y analitico",
-                copy=(
-                    "Una portada unificada para operar los modulos del aplicativo con una interfaz sobria, "
-                    "clara y lista para crecer. Desde aqui entras a TEC y a los espacios que luego completaremos."
-                ),
-                kicker="Suite Operativa",
-                metrics=[
-                    (str(len(MODULE_CATALOG)), "modulos visibles"),
-                    ("1", "modulo ya operativo"),
-                    (role_label, "perfil activo"),
-                ],
+    st.markdown(
+        build_hero_panel(
+            title="Centro de control operativo y analitico",
+            copy=(
+                "Una portada unificada para operar los modulos del aplicativo con una interfaz sobria, "
+                "clara y lista para crecer. Desde aqui entras a TEC y a los espacios que luego completaremos."
             ),
-            unsafe_allow_html=True,
-        )
-    with brand_col:
-        logo_image = load_contractor_logo()
-        if logo_image is not None:
-            st.markdown('<section class="auth-card"><div class="auth-card-kicker">Empresa contratante</div><div class="auth-card-title">Identidad institucional</div><p class="auth-card-copy">La portada incorpora la marca del contratante como referencia visual permanente.</p></section>', unsafe_allow_html=True)
-            st.image(logo_image, use_container_width=True)
+            kicker="Suite Operativa",
+            metrics=[
+                (str(len(MODULE_CATALOG)), "modulos visibles"),
+                ("1", "modulo ya operativo"),
+                (role_label, "perfil activo"),
+            ],
+        ),
+        unsafe_allow_html=True,
+    )
 
     st.markdown('<div class="section-heading">Modulos disponibles</div>', unsafe_allow_html=True)
     st.markdown(
