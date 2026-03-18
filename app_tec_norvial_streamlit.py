@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
+from PIL import Image, ImageChops
 from streamlit.errors import StreamlitSecretNotFoundError
 
 from app_auth import (
@@ -25,6 +26,7 @@ from app_storage import build_storage_backend
 
 APP_TITLE = "Procesador TEC de Peajes"
 APP_NAV_KEY = "app_selected_page"
+CONTRACTOR_LOGO_PATH = Path(__file__).parent / "ChatGPT Image 18 mar 2026, 03_37_00 a.m..png"
 
 MODULE_CATALOG = [
     {
@@ -321,6 +323,116 @@ def inject_global_styles() -> None:
                 color: #f4f8ff;
             }
 
+            [data-testid="stSidebar"] .stButton > button p {
+                font-size: 1.05rem;
+                font-weight: 600;
+            }
+
+            [data-testid="stSidebar"] .stButton > button#sidebar_users_button {
+                min-height: 3.25rem;
+            }
+
+            [data-testid="stSidebar"] .stButton > button#sidebar_users_button p {
+                font-size: 1.45rem;
+                line-height: 1;
+            }
+
+            .sidebar-brand-wrap {
+                padding: 0.35rem 0 1rem;
+            }
+
+            .sidebar-brand-kicker {
+                text-transform: uppercase;
+                letter-spacing: 0.14em;
+                font-size: 0.68rem;
+                font-weight: 700;
+                color: rgba(214, 230, 255, 0.7);
+                margin-bottom: 0.35rem;
+            }
+
+            .sidebar-brand-note {
+                font-size: 0.82rem;
+                line-height: 1.45;
+                color: rgba(230, 239, 255, 0.76);
+                margin-top: 0.45rem;
+            }
+
+            .sidebar-text-link {
+                margin-top: 0.55rem;
+            }
+
+            .sidebar-text-link a {
+                color: #8fd0ff;
+                text-decoration: none;
+                font-size: 0.98rem;
+                font-weight: 700;
+            }
+
+            .sidebar-text-link a:hover {
+                color: #d6efff;
+                text-decoration: underline;
+            }
+
+            .auth-layout-title {
+                font-size: 1.1rem;
+                font-weight: 700;
+                color: var(--app-ink);
+                margin: 0.4rem 0 0.25rem;
+            }
+
+            .auth-layout-copy {
+                color: var(--app-muted);
+                line-height: 1.7;
+                margin-bottom: 1rem;
+            }
+
+            .auth-card {
+                border-radius: 26px;
+                border: 1px solid rgba(15, 61, 145, 0.12);
+                background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(242,247,255,0.96));
+                box-shadow: 0 18px 40px rgba(8, 29, 74, 0.09);
+                padding: 1.4rem 1.4rem 1rem;
+                margin-bottom: 1rem;
+            }
+
+            .auth-card-kicker {
+                text-transform: uppercase;
+                letter-spacing: 0.14em;
+                font-size: 0.72rem;
+                color: var(--app-accent);
+                font-weight: 700;
+                margin-bottom: 0.55rem;
+            }
+
+            .auth-card-title {
+                font-size: 1.45rem;
+                font-weight: 700;
+                color: var(--app-ink);
+                margin-bottom: 0.35rem;
+            }
+
+            .auth-card-copy {
+                color: var(--app-muted);
+                line-height: 1.65;
+                margin-bottom: 0;
+            }
+
+            .brand-panel {
+                border-radius: 24px;
+                border: 1px solid rgba(255,255,255,0.14);
+                background: rgba(255,255,255,0.08);
+                padding: 1rem;
+                backdrop-filter: blur(8px);
+                margin-top: 1rem;
+            }
+
+            .brand-panel-copy {
+                color: rgba(240, 246, 255, 0.82);
+                font-size: 0.92rem;
+                line-height: 1.6;
+                margin-top: 0.7rem;
+            }
+
             .hero-panel {
                 padding: 2rem 2.2rem;
                 border-radius: 28px;
@@ -568,30 +680,87 @@ def build_module_card(module: dict) -> str:
     )
 
 
+@st.cache_data(show_spinner=False)
+def load_contractor_logo() -> Image.Image | None:
+    if not CONTRACTOR_LOGO_PATH.exists():
+        return None
+
+    image = Image.open(CONTRACTOR_LOGO_PATH).convert("RGBA")
+    background = Image.new("RGBA", image.size, (255, 255, 255, 255))
+    diff = ImageChops.difference(image, background)
+    bbox = diff.getbbox()
+    if bbox:
+        left, top, right, bottom = bbox
+        padding = 24
+        left = max(0, left - padding)
+        top = max(0, top - padding)
+        right = min(image.width, right + padding)
+        bottom = min(image.height, bottom + padding)
+        image = image.crop((left, top, right, bottom))
+
+    return image
+
+
+def render_contractor_branding() -> None:
+    logo_image = load_contractor_logo()
+    if logo_image is None:
+        return
+
+    st.markdown('<div class="sidebar-brand-wrap"><div class="sidebar-brand-kicker">Empresa contratante</div></div>', unsafe_allow_html=True)
+    st.image(logo_image, use_container_width=True)
+    st.markdown(
+        '<div class="sidebar-brand-note">Identidad visual del contratante integrada en el acceso y en la portada del aplicativo.</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def navigate_to(page: str) -> None:
+    if page == "Inicio":
+        st.query_params.clear()
+    else:
+        st.query_params["page"] = page
     st.session_state[APP_NAV_KEY] = page
     st.rerun()
+
+
+def get_requested_page() -> str | None:
+    raw_page = st.query_params.get("page")
+    if raw_page is None:
+        return None
+    if isinstance(raw_page, list):
+        raw_page = raw_page[0] if raw_page else None
+    if raw_page is None:
+        return None
+    page = str(raw_page).strip()
+    return page or None
 
 
 def render_home_page(current_user: dict | None) -> None:
     user_label = current_user["full_name"] if current_user else "Equipo CIDATT"
     role_label = current_user["role_label"] if current_user else "Acceso directo"
-    st.markdown(
-        build_hero_panel(
-            title="Centro de control operativo y analitico",
-            copy=(
-                "Una portada unificada para operar los modulos del aplicativo con una interfaz sobria, "
-                "clara y lista para crecer. Desde aqui entras a TEC y a los espacios que luego completaremos."
+    hero_col, brand_col = st.columns([1.35, 0.65], gap="large")
+    with hero_col:
+        st.markdown(
+            build_hero_panel(
+                title="Centro de control operativo y analitico",
+                copy=(
+                    "Una portada unificada para operar los modulos del aplicativo con una interfaz sobria, "
+                    "clara y lista para crecer. Desde aqui entras a TEC y a los espacios que luego completaremos."
+                ),
+                kicker="Suite Operativa",
+                metrics=[
+                    (str(len(MODULE_CATALOG)), "modulos visibles"),
+                    ("1", "modulo ya operativo"),
+                    (role_label, "perfil activo"),
+                ],
             ),
-            kicker="Suite Operativa",
-            metrics=[
-                (str(len(MODULE_CATALOG)), "modulos visibles"),
-                ("1", "modulo ya operativo"),
-                (role_label, "perfil activo"),
-            ],
-        ),
-        unsafe_allow_html=True,
-    )
+            unsafe_allow_html=True,
+        )
+    with brand_col:
+        logo_image = load_contractor_logo()
+        if logo_image is not None:
+            st.markdown('<section class="auth-card"><div class="auth-card-kicker">Empresa contratante</div><div class="auth-card-title">Identidad institucional</div><p class="auth-card-copy">La portada incorpora la marca del contratante como referencia visual permanente.</p></section>', unsafe_allow_html=True)
+            st.image(logo_image, use_container_width=True)
 
     st.markdown('<div class="section-heading">Modulos disponibles</div>', unsafe_allow_html=True)
     st.markdown(
@@ -2652,24 +2821,31 @@ def password_is_valid(password: str) -> bool:
 
 
 def render_bootstrap_admin(storage_backend) -> None:
-    st.markdown(
-        build_hero_panel(
-            title="Alta inicial del administrador general",
-            copy="Configura la primera cuenta con acceso total para gobernar usuarios, configuraciones y vigencias del aplicativo.",
-            kicker="Primer acceso",
-        ),
-        unsafe_allow_html=True,
-    )
-    st.subheader("Crear administrador inicial")
-    st.caption("La primera vez debes registrar una cuenta administradora general.")
-    with st.form("bootstrap_admin_form"):
-        full_name = st.text_input("Nombre completo")
-        username = st.text_input("Usuario")
-        email = st.text_input("Correo electronico")
-        phone_number = st.text_input("Celular")
-        password = st.text_input("Contrasena", type="password")
-        confirm_password = st.text_input("Confirmar contrasena", type="password")
-        submitted = st.form_submit_button("Crear administrador", use_container_width=True)
+    intro_col, form_col = st.columns([1.15, 0.85], gap="large")
+    with intro_col:
+        st.markdown(
+            build_hero_panel(
+                title="Alta inicial del administrador general",
+                copy="Configura la primera cuenta con acceso total para gobernar usuarios, configuraciones y vigencias del aplicativo.",
+                kicker="Primer acceso",
+                metrics=[
+                    ("Administrador general", "rol inicial"),
+                    ("Correo y celular", "datos obligatorios"),
+                    ("MySQL" if storage_backend.mode == "mysql" else storage_backend.mode.upper(), "persistencia"),
+                ],
+            ),
+            unsafe_allow_html=True,
+        )
+    with form_col:
+        st.markdown('<section class="auth-card"><div class="auth-card-kicker">Configurar acceso</div><div class="auth-card-title">Crear administrador inicial</div><p class="auth-card-copy">La primera vez debes registrar una cuenta con control total sobre usuarios, accesos e historial.</p></section>', unsafe_allow_html=True)
+        with st.form("bootstrap_admin_form"):
+            full_name = st.text_input("Nombre completo")
+            username = st.text_input("Usuario")
+            email = st.text_input("Correo electronico")
+            phone_number = st.text_input("Celular")
+            password = st.text_input("Contrasena", type="password")
+            confirm_password = st.text_input("Confirmar contrasena", type="password")
+            submitted = st.form_submit_button("Crear administrador", use_container_width=True)
 
     if not submitted:
         return
@@ -2694,33 +2870,41 @@ def render_bootstrap_admin(storage_backend) -> None:
     if auth_result.get("ok"):
         set_authenticated_user(auth_result["user"])
         st.session_state[APP_NAV_KEY] = "Inicio"
+        st.query_params.clear()
         st.rerun()
 
 
 def render_login_gate(storage_backend):
-    st.markdown(
-        build_hero_panel(
-            title="Acceso seguro a la suite operativa",
-            copy="Ingreso por usuario, rol y ventana de vigencia para administrar TEC y los modulos que iran creciendo dentro del aplicativo.",
-            kicker="Autenticacion",
-            metrics=[
-                ("MySQL" if storage_backend.mode == "mysql" else storage_backend.mode.upper(), "persistencia"),
-                (str(len(MODULE_CATALOG)), "modulos previstos"),
-                ("PBKDF2", "proteccion de clave"),
-            ],
-        ),
-        unsafe_allow_html=True,
-    )
-
     if not storage_backend.has_users():
         render_bootstrap_admin(storage_backend)
         return None
 
-    st.subheader("Iniciar sesion")
-    with st.form("login_form"):
-        username = st.text_input("Usuario")
-        password = st.text_input("Contrasena", type="password")
-        submitted = st.form_submit_button("Ingresar", use_container_width=True)
+    intro_col, form_col = st.columns([1.15, 0.85], gap="large")
+    with intro_col:
+        st.markdown(
+            build_hero_panel(
+                title="Acceso seguro a la suite operativa",
+                copy="Ingreso por usuario, rol y ventana de vigencia para administrar TEC y los modulos que iran creciendo dentro del aplicativo.",
+                kicker="Autenticacion",
+                metrics=[
+                    ("MySQL" if storage_backend.mode == "mysql" else storage_backend.mode.upper(), "persistencia"),
+                    (str(len(MODULE_CATALOG)), "modulos previstos"),
+                    ("PBKDF2", "proteccion de clave"),
+                ],
+            ),
+            unsafe_allow_html=True,
+        )
+        logo_image = load_contractor_logo()
+        if logo_image is not None:
+            st.markdown('<section class="brand-panel"><div class="auth-card-kicker">Empresa contratante</div><div class="brand-panel-copy">El acceso incorpora la identidad del contratante para mantener una entrada institucional y reconocible.</div></section>', unsafe_allow_html=True)
+            st.image(logo_image, use_container_width=True)
+
+    with form_col:
+        st.markdown('<section class="auth-card"><div class="auth-card-kicker">Ingreso</div><div class="auth-card-title">Iniciar sesion</div><p class="auth-card-copy">Usa tu cuenta habilitada para entrar a la portada operativa y a las herramientas autorizadas por tu rol.</p></section>', unsafe_allow_html=True)
+        with st.form("login_form"):
+            username = st.text_input("Usuario")
+            password = st.text_input("Contrasena", type="password")
+            submitted = st.form_submit_button("Ingresar", use_container_width=True)
 
     if not submitted:
         return None
@@ -2732,6 +2916,7 @@ def render_login_gate(storage_backend):
 
     set_authenticated_user(auth_result["user"])
     st.session_state[APP_NAV_KEY] = "Inicio"
+    st.query_params.clear()
     st.rerun()
     return None
 
@@ -3298,6 +3483,8 @@ def main() -> None:
     if storage_backend.auth_enabled():
         current_user = get_authenticated_user()
         if not current_user:
+            with st.sidebar:
+                render_contractor_branding()
             render_login_gate(storage_backend)
             return
     else:
@@ -3317,6 +3504,10 @@ def main() -> None:
         page_options.append("TEC")
     page_options.extend(["Relevamientos", "Auditorias", "Satisfaccion", "Flujogramas"])
 
+    requested_page = get_requested_page()
+    if requested_page:
+        st.session_state[APP_NAV_KEY] = requested_page
+
     current_page = st.session_state.get(APP_NAV_KEY, "Inicio")
     valid_pages = set(page_options)
     if can_open_user_management:
@@ -3328,43 +3519,37 @@ def main() -> None:
         st.session_state[APP_NAV_KEY] = current_page
 
     with st.sidebar:
+        render_contractor_branding()
+        st.divider()
         if current_user:
             st.header("Sesion")
             st.write(current_user["full_name"])
             st.caption(f"Usuario: {current_user['username']}")
             st.caption(f"Rol: {current_user['role_label']}")
             st.caption(describe_access_window(current_user.get("active_from"), current_user.get("active_until")))
-            action_specs = [("logout", "Cerrar sesion")]
-            if can_view_history:
-                action_specs.append(("history", "Historial"))
+            action_cols = st.columns([5, 1]) if can_open_user_management else st.columns([1])
+            with action_cols[0]:
+                if st.button("Cerrar sesion", key="sidebar_logout_button", use_container_width=True):
+                    st.session_state[APP_NAV_KEY] = "Inicio"
+                    st.query_params.clear()
+                    clear_authenticated_user()
+                    st.rerun()
             if can_open_user_management:
-                action_specs.append(("users", "⚙"))
+                with action_cols[1]:
+                    if st.button(
+                        "⚙",
+                        key="sidebar_users_button",
+                        help="Usuarios",
+                        use_container_width=True,
+                        type="primary" if current_page == "Usuarios" else "secondary",
+                    ):
+                        navigate_to("Usuarios")
 
-            action_cols = st.columns(len(action_specs))
-            for index, (action_key, action_label) in enumerate(action_specs):
-                with action_cols[index]:
-                    if action_key == "logout":
-                        if st.button("Cerrar sesion", key="sidebar_logout_button", use_container_width=True):
-                            st.session_state[APP_NAV_KEY] = "Inicio"
-                            clear_authenticated_user()
-                            st.rerun()
-                    elif action_key == "history":
-                        if st.button(
-                            "Historial",
-                            key="sidebar_history_button",
-                            use_container_width=True,
-                            type="primary" if current_page == "Historial" else "secondary",
-                        ):
-                            navigate_to("Historial")
-                    elif action_key == "users":
-                        if st.button(
-                            action_label,
-                            key="sidebar_users_button",
-                            help="Usuarios",
-                            use_container_width=True,
-                            type="primary" if current_page == "Usuarios" else "secondary",
-                        ):
-                            navigate_to("Usuarios")
+            if can_view_history:
+                st.markdown(
+                    '<div class="sidebar-text-link"><a href="?page=Historial">Historial</a></div>',
+                    unsafe_allow_html=True,
+                )
             st.divider()
         page = current_page
 
