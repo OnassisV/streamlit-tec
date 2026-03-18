@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import time, timedelta
+from datetime import datetime, time, timedelta
 from io import BytesIO
 from pathlib import Path
 import re
@@ -12,10 +12,106 @@ from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from streamlit.errors import StreamlitSecretNotFoundError
 
+from app_auth import (
+    ROLE_DEFINITIONS,
+    clear_authenticated_user,
+    describe_access_window,
+    get_authenticated_user,
+    set_authenticated_user,
+    user_has_permission,
+)
 from app_storage import build_storage_backend
 
 
 APP_TITLE = "Procesador TEC de Peajes"
+APP_NAV_KEY = "app_selected_page"
+
+MODULE_CATALOG = [
+    {
+        "page": "TEC",
+        "title": "TEC",
+        "eyebrow": "Modulo operativo",
+        "description": "Procesamiento de bases de peaje, limpieza de placas, recuperacion de tiempos y generacion de entregables.",
+        "status": "Activo",
+        "accent": "#0f3d91",
+        "icon_svg": '<path d="M4 19h16" /><path d="M7 16V9" /><path d="M12 16V5" /><path d="M17 16v-3" />',
+    },
+    {
+        "page": "Relevamientos",
+        "title": "Relevamientos",
+        "eyebrow": "Modulo planificado",
+        "description": "Registro estructurado de levantamiento de campo, evidencias, hallazgos y seguimiento por estacion o activo.",
+        "status": "Proximamente",
+        "accent": "#1849a9",
+        "icon_svg": '<path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />',
+    },
+    {
+        "page": "Auditorias",
+        "title": "Auditorias",
+        "eyebrow": "Modulo planificado",
+        "description": "Control de auditorias operativas, observaciones, estados de cumplimiento y trazabilidad de acciones correctivas.",
+        "status": "Proximamente",
+        "accent": "#245cc6",
+        "icon_svg": '<path d="M9 3h6l5 5v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3" /><path d="M9 3v5h5" /><path d="M9 14h6" /><path d="M9 18h6" />',
+    },
+    {
+        "page": "Satisfaccion",
+        "title": "Satisfaccion",
+        "eyebrow": "Modulo planificado",
+        "description": "Seguimiento de experiencia de usuario, encuestas, indicadores de percepcion y resumenes ejecutivos.",
+        "status": "Proximamente",
+        "accent": "#2f6ddc",
+        "icon_svg": '<path d="M8 14s1.5 2 4 2 4-2 4-2" /><path d="M9 9h.01" /><path d="M15 9h.01" /><path d="M12 21c4.97 0 9-3.582 9-8s-4.03-8-9-8-9 3.582-9 8c0 2.394 1.184 4.542 3.06 6.008L6 21l2.563-1.025A10.11 10.11 0 0 0 12 21Z" />',
+    },
+    {
+        "page": "Flujogramas",
+        "title": "Flujogramas",
+        "eyebrow": "Modulo planificado",
+        "description": "Biblioteca de procesos, mapas operativos, versionado documental y vistas navegables de flujo de trabajo.",
+        "status": "Proximamente",
+        "accent": "#3b7be6",
+        "icon_svg": '<path d="M12 3v4" /><path d="M12 17v4" /><path d="M5 12H3" /><path d="M21 12h-2" /><rect x="8" y="7" width="8" height="10" rx="2" /><path d="M8 12H5" /><path d="M19 12h-3" />',
+    },
+]
+
+MODULE_PLACEHOLDERS = {
+    "Relevamientos": {
+        "headline": "Levantamiento de campo con estructura comun",
+        "summary": "Este espacio quedara listo para programar formularios, evidencias y seguimiento de hallazgos por sede o peaje.",
+        "items": [
+            "fichas por punto relevado",
+            "adjuntos fotograficos y comentarios",
+            "estado de observaciones y responsables",
+        ],
+    },
+    "Auditorias": {
+        "headline": "Control operativo con trazabilidad",
+        "summary": "Aqui podras concentrar revisiones, no conformidades, evidencias y cierres por auditoria.",
+        "items": [
+            "programacion de auditorias",
+            "matriz de hallazgos y severidad",
+            "seguimiento de planes de accion",
+        ],
+    },
+    "Satisfaccion": {
+        "headline": "Indicadores de experiencia y percepcion",
+        "summary": "El modulo servira para centralizar encuestas, cortes por canal y tableros de satisfaccion.",
+        "items": [
+            "carga de encuestas y bases",
+            "resumenes por periodo o sede",
+            "hallazgos de experiencia del usuario",
+        ],
+    },
+    "Flujogramas": {
+        "headline": "Mapa visual de procesos y documentos",
+        "summary": "Quedara como repositorio de diagramas, procedimientos y navegacion por proceso.",
+        "items": [
+            "catalogo de procesos por area",
+            "versionado de diagramas y anexos",
+            "consulta rapida para operacion y control",
+        ],
+    },
+}
 
 EXPECTED_COLUMNS = [
     "PEAJE",
@@ -159,6 +255,365 @@ DEFAULT_CONFIG = {
     "aplicar_donantes": True,
     "aplicar_swap_final_t2_t3": True,
 }
+
+
+def inject_global_styles() -> None:
+    st.markdown(
+        """
+        <style>
+            :root {
+                --app-bg: #f3f7ff;
+                --app-surface: rgba(255, 255, 255, 0.92);
+                --app-surface-strong: #ffffff;
+                --app-ink: #102347;
+                --app-muted: #5c6f93;
+                --app-line: rgba(15, 61, 145, 0.12);
+                --app-accent: #0f3d91;
+                --app-accent-soft: #e9f0ff;
+                --app-shadow: 0 18px 45px rgba(9, 29, 74, 0.12);
+            }
+
+            .stApp {
+                background:
+                    radial-gradient(circle at top left, rgba(50, 100, 204, 0.18), transparent 28%),
+                    linear-gradient(180deg, #eef4ff 0%, #f7faff 42%, #eef3fb 100%);
+                color: var(--app-ink);
+            }
+
+            [data-testid="stSidebar"] {
+                background: linear-gradient(180deg, #07162f 0%, #0d2448 100%);
+                border-right: 1px solid rgba(255, 255, 255, 0.08);
+            }
+
+            [data-testid="stSidebar"] * {
+                color: #f4f8ff;
+            }
+
+            [data-testid="stSidebar"] .stRadio label,
+            [data-testid="stSidebar"] .stCheckbox label,
+            [data-testid="stSidebar"] .stMarkdown,
+            [data-testid="stSidebar"] .stCaption {
+                color: #f4f8ff;
+            }
+
+            .hero-panel {
+                padding: 2rem 2.2rem;
+                border-radius: 28px;
+                background:
+                    linear-gradient(135deg, rgba(5, 20, 44, 0.96) 0%, rgba(15, 61, 145, 0.94) 55%, rgba(74, 125, 218, 0.88) 100%);
+                box-shadow: var(--app-shadow);
+                position: relative;
+                overflow: hidden;
+                margin-bottom: 1.2rem;
+                color: #f6f9ff;
+            }
+
+            .hero-panel::after {
+                content: "";
+                position: absolute;
+                inset: auto -90px -90px auto;
+                width: 240px;
+                height: 240px;
+                border-radius: 50%;
+                background: radial-gradient(circle, rgba(255,255,255,0.22), rgba(255,255,255,0.02) 70%);
+            }
+
+            .hero-kicker {
+                text-transform: uppercase;
+                letter-spacing: 0.18em;
+                font-size: 0.72rem;
+                color: rgba(235, 243, 255, 0.78);
+                margin-bottom: 0.7rem;
+                font-weight: 700;
+            }
+
+            .hero-title {
+                font-size: 2.5rem;
+                line-height: 1.04;
+                font-weight: 700;
+                margin: 0;
+                max-width: 12ch;
+            }
+
+            .hero-copy {
+                font-size: 1rem;
+                line-height: 1.7;
+                max-width: 62ch;
+                margin-top: 0.9rem;
+                color: rgba(245, 248, 255, 0.86);
+            }
+
+            .metrics-strip {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+                gap: 0.9rem;
+                margin: 1rem 0 1.3rem;
+            }
+
+            .metric-tile {
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                background: rgba(255, 255, 255, 0.08);
+                backdrop-filter: blur(8px);
+                border-radius: 18px;
+                padding: 1rem 1rem 0.9rem;
+            }
+
+            .metric-value {
+                font-size: 1.7rem;
+                font-weight: 700;
+                color: #ffffff;
+            }
+
+            .metric-label {
+                margin-top: 0.2rem;
+                font-size: 0.85rem;
+                color: rgba(238, 245, 255, 0.78);
+            }
+
+            .section-heading {
+                font-size: 1.25rem;
+                font-weight: 700;
+                color: var(--app-ink);
+                margin: 1rem 0 0.3rem;
+            }
+
+            .section-copy {
+                color: var(--app-muted);
+                margin-bottom: 1rem;
+            }
+
+            .module-card {
+                min-height: 240px;
+                border-radius: 24px;
+                padding: 1.2rem;
+                background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(244,248,255,0.92));
+                border: 1px solid var(--app-line);
+                box-shadow: 0 14px 35px rgba(12, 31, 76, 0.08);
+                position: relative;
+                overflow: hidden;
+                margin-bottom: 0.75rem;
+            }
+
+            .module-card::before {
+                content: "";
+                position: absolute;
+                inset: 0 0 auto 0;
+                height: 5px;
+                background: var(--module-accent);
+            }
+
+            .module-icon {
+                width: 52px;
+                height: 52px;
+                border-radius: 16px;
+                display: grid;
+                place-items: center;
+                color: var(--module-accent);
+                background: rgba(15, 61, 145, 0.08);
+                border: 1px solid rgba(15, 61, 145, 0.12);
+            }
+
+            .module-icon svg {
+                width: 26px;
+                height: 26px;
+                stroke: currentColor;
+                stroke-width: 1.7;
+                fill: none;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+            }
+
+            .module-eyebrow {
+                margin-top: 1rem;
+                text-transform: uppercase;
+                letter-spacing: 0.12em;
+                font-size: 0.72rem;
+                font-weight: 700;
+                color: var(--module-accent);
+            }
+
+            .module-title {
+                font-size: 1.35rem;
+                font-weight: 700;
+                margin: 0.45rem 0 0.35rem;
+                color: var(--app-ink);
+            }
+
+            .module-description {
+                color: var(--app-muted);
+                line-height: 1.6;
+                font-size: 0.95rem;
+                min-height: 74px;
+            }
+
+            .module-status {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.4rem;
+                border-radius: 999px;
+                padding: 0.38rem 0.72rem;
+                background: rgba(15, 61, 145, 0.08);
+                color: var(--module-accent);
+                font-size: 0.82rem;
+                font-weight: 700;
+            }
+
+            .placeholder-card {
+                border-radius: 24px;
+                border: 1px solid var(--app-line);
+                background: rgba(255, 255, 255, 0.95);
+                padding: 1.45rem;
+                box-shadow: 0 16px 34px rgba(12, 31, 76, 0.08);
+            }
+
+            .placeholder-title {
+                font-size: 1.55rem;
+                font-weight: 700;
+                color: var(--app-ink);
+                margin-bottom: 0.35rem;
+            }
+
+            .placeholder-copy {
+                color: var(--app-muted);
+                line-height: 1.7;
+            }
+
+            .placeholder-list {
+                margin: 0.9rem 0 0;
+                padding-left: 1rem;
+                color: var(--app-ink);
+            }
+
+            .placeholder-list li {
+                margin-bottom: 0.45rem;
+            }
+
+            div[data-testid="stMetric"] {
+                background: rgba(255,255,255,0.92);
+                border: 1px solid var(--app-line);
+                border-radius: 20px;
+                padding: 0.8rem 1rem;
+                box-shadow: 0 10px 28px rgba(12, 31, 76, 0.07);
+            }
+
+            @media (max-width: 900px) {
+                .hero-title {
+                    font-size: 2rem;
+                }
+
+                .hero-panel {
+                    padding: 1.5rem;
+                }
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def build_hero_panel(title: str, copy: str, kicker: str, metrics: list[tuple[str, str]] | None = None) -> str:
+    metrics_markup = ""
+    if metrics:
+        metric_items = []
+        for value, label in metrics:
+            metric_items.append(
+                f'<div class="metric-tile"><div class="metric-value">{value}</div><div class="metric-label">{label}</div></div>'
+            )
+        metrics_markup = f'<div class="metrics-strip">{"".join(metric_items)}</div>'
+
+    return (
+        '<section class="hero-panel">'
+        f'<div class="hero-kicker">{kicker}</div>'
+        f'<h1 class="hero-title">{title}</h1>'
+        f'<div class="hero-copy">{copy}</div>'
+        f'{metrics_markup}'
+        '</section>'
+    )
+
+
+def build_module_card(module: dict) -> str:
+    return (
+        f'<section class="module-card" style="--module-accent:{module["accent"]};">'
+        f'<div class="module-icon"><svg viewBox="0 0 24 24" aria-hidden="true">{module["icon_svg"]}</svg></div>'
+        f'<div class="module-eyebrow">{module["eyebrow"]}</div>'
+        f'<div class="module-title">{module["title"]}</div>'
+        f'<div class="module-description">{module["description"]}</div>'
+        f'<div class="module-status">{module["status"]}</div>'
+        '</section>'
+    )
+
+
+def navigate_to(page: str) -> None:
+    st.session_state[APP_NAV_KEY] = page
+    st.rerun()
+
+
+def render_home_page(current_user: dict | None) -> None:
+    user_label = current_user["full_name"] if current_user else "Equipo CIDATT"
+    role_label = current_user["role_label"] if current_user else "Acceso directo"
+    st.markdown(
+        build_hero_panel(
+            title="Centro de control operativo y analitico",
+            copy=(
+                "Una portada unificada para operar los modulos del aplicativo con una interfaz sobria, "
+                "clara y lista para crecer. Desde aqui entras a TEC y a los espacios que luego completaremos."
+            ),
+            kicker="Suite Operativa",
+            metrics=[
+                (str(len(MODULE_CATALOG)), "modulos visibles"),
+                ("1", "modulo ya operativo"),
+                (role_label, "perfil activo"),
+            ],
+        ),
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="section-heading">Modulos disponibles</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="section-copy">Sesion iniciada como {user_label}. Selecciona un modulo para continuar.</div>',
+        unsafe_allow_html=True,
+    )
+
+    for start_index in range(0, len(MODULE_CATALOG), 3):
+        row_modules = MODULE_CATALOG[start_index : start_index + 3]
+        columns = st.columns(len(row_modules))
+        for column, module in zip(columns, row_modules):
+            with column:
+                st.markdown(build_module_card(module), unsafe_allow_html=True)
+                button_label = "Abrir modulo" if module["page"] == "TEC" else "Ver portada"
+                if st.button(button_label, key=f'home_{module["page"]}', use_container_width=True):
+                    navigate_to(module["page"])
+
+
+def render_placeholder_module_page(page: str) -> None:
+    module = next((item for item in MODULE_CATALOG if item["page"] == page), None)
+    placeholder = MODULE_PLACEHOLDERS[page]
+    st.markdown(
+        build_hero_panel(
+            title=module["title"] if module else page,
+            copy=placeholder["summary"],
+            kicker=module["eyebrow"] if module else "Modulo",
+            metrics=[
+                (module["status"] if module else "Proximamente", "estado"),
+                ("Azul marino", "linea visual"),
+                ("En definicion", "siguiente etapa"),
+            ],
+        ),
+        unsafe_allow_html=True,
+    )
+    items_markup = "".join(f"<li>{item}</li>" for item in placeholder["items"])
+    st.markdown(
+        (
+            '<section class="placeholder-card">'
+            f'<div class="placeholder-title">{placeholder["headline"]}</div>'
+            f'<div class="placeholder-copy">{placeholder["summary"]}</div>'
+            f'<ul class="placeholder-list">{items_markup}</ul>'
+            '</section>'
+        ),
+        unsafe_allow_html=True,
+    )
+    if st.button("Volver al inicio", key=f"back_{page}", use_container_width=False):
+        navigate_to("Inicio")
 
 
 def suggest_column(columns: list[str], patterns: list[str]) -> str | None:
@@ -2127,15 +2582,426 @@ def load_streamlit_secrets() -> dict:
         return {}
 
 
-def main() -> None:
-    st.set_page_config(page_title=APP_TITLE, layout="wide")
-    st.title(APP_TITLE)
-    st.caption("Carga una base, mapea columnas, activa o desactiva pasos del pipeline y descarga el resultado limpio.")
-    storage_backend = build_storage_backend(load_streamlit_secrets())
+def explain_auth_failure(reason: str) -> str:
+    messages = {
+        "invalid_credentials": "Usuario o contrasena no validos.",
+        "disabled": "Tu usuario esta deshabilitado.",
+        "not_yet_active": "Tu usuario todavia no entra en vigencia.",
+        "expired": "Tu usuario ya vencio.",
+        "auth_not_available": "El backend actual no tiene autenticacion habilitada.",
+    }
+    return messages.get(reason, "No fue posible iniciar sesion.")
+
+
+def normalize_date_input(value) -> datetime | None:
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    if isinstance(value, datetime):
+        return value
+    return datetime.combine(value, time.min)
+
+
+def date_to_window_start(value) -> datetime | None:
+    parsed = normalize_date_input(value)
+    if not parsed:
+        return None
+    return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def date_to_window_end(value) -> datetime | None:
+    parsed = normalize_date_input(value)
+    if not parsed:
+        return None
+    return parsed.replace(hour=23, minute=59, second=59, microsecond=0)
+
+
+def date_value_or_none(value):
+    parsed = normalize_date_input(value)
+    return parsed.date() if parsed else None
+
+
+def password_is_valid(password: str) -> bool:
+    return len(password) >= 8
+
+
+def render_bootstrap_admin(storage_backend) -> None:
+    st.markdown(
+        build_hero_panel(
+            title="Alta inicial del administrador general",
+            copy="Configura la primera cuenta con acceso total para gobernar usuarios, configuraciones y vigencias del aplicativo.",
+            kicker="Primer acceso",
+        ),
+        unsafe_allow_html=True,
+    )
+    st.subheader("Crear administrador inicial")
+    st.caption("La primera vez debes registrar una cuenta administradora general.")
+    with st.form("bootstrap_admin_form"):
+        full_name = st.text_input("Nombre completo")
+        username = st.text_input("Usuario")
+        email = st.text_input("Correo electronico")
+        phone_number = st.text_input("Celular")
+        password = st.text_input("Contrasena", type="password")
+        confirm_password = st.text_input("Confirmar contrasena", type="password")
+        submitted = st.form_submit_button("Crear administrador", use_container_width=True)
+
+    if not submitted:
+        return
+
+    if not full_name.strip() or not username.strip() or not email.strip() or not phone_number.strip():
+        st.error("Nombre completo, usuario, correo y celular son obligatorios.")
+        return
+    if password != confirm_password:
+        st.error("Las contrasenas no coinciden.")
+        return
+    if not password_is_valid(password):
+        st.error("La contrasena debe tener al menos 8 caracteres.")
+        return
+
+    try:
+        storage_backend.create_initial_admin(username, full_name, password, email.strip(), phone_number.strip())
+        auth_result = storage_backend.authenticate_user(username, password)
+    except Exception as exc:
+        st.error(f"No pude crear el administrador inicial: {exc}")
+        return
+
+    if auth_result.get("ok"):
+        set_authenticated_user(auth_result["user"])
+        st.rerun()
+
+
+def render_login_gate(storage_backend):
+    st.markdown(
+        build_hero_panel(
+            title="Acceso seguro a la suite operativa",
+            copy="Ingreso por usuario, rol y ventana de vigencia para administrar TEC y los modulos que iran creciendo dentro del aplicativo.",
+            kicker="Autenticacion",
+            metrics=[
+                ("MySQL" if storage_backend.mode == "mysql" else storage_backend.mode.upper(), "persistencia"),
+                (str(len(MODULE_CATALOG)), "modulos previstos"),
+                ("PBKDF2", "proteccion de clave"),
+            ],
+        ),
+        unsafe_allow_html=True,
+    )
+
+    if not storage_backend.has_users():
+        render_bootstrap_admin(storage_backend)
+        return None
+
+    st.subheader("Iniciar sesion")
+    with st.form("login_form"):
+        username = st.text_input("Usuario")
+        password = st.text_input("Contrasena", type="password")
+        submitted = st.form_submit_button("Ingresar", use_container_width=True)
+
+    if not submitted:
+        return None
+
+    auth_result = storage_backend.authenticate_user(username, password)
+    if not auth_result.get("ok"):
+        st.error(explain_auth_failure(auth_result.get("reason", "")))
+        return None
+
+    set_authenticated_user(auth_result["user"])
+    st.rerun()
+    return None
+
+
+def render_history_page(storage_backend) -> None:
+    st.markdown(
+        build_hero_panel(
+            title="Historial de corridas",
+            copy="Consulta ejecuciones recientes guardadas en la base de datos para seguimiento operativo y trazabilidad.",
+            kicker="Historial",
+            metrics=[
+                (storage_backend.mode.upper(), "backend"),
+                ("50", "maximo visible"),
+            ],
+        ),
+        unsafe_allow_html=True,
+    )
+    st.dataframe(storage_backend.list_recent_runs(50), use_container_width=True)
+
+
+def render_user_management_page(storage_backend, current_user: dict) -> None:
+    can_manage_users = user_has_permission("manage_users", current_user)
+    can_manage_activation = user_has_permission("manage_user_activation", current_user)
+
+    st.markdown(
+        build_hero_panel(
+            title="Gestion de usuarios",
+            copy="Administra altas, roles, vigencias y credenciales de acceso con una vista centralizada para operacion y control.",
+            kicker="Administracion",
+            metrics=[
+                ("3", "roles base"),
+                ("Correo + celular", "datos obligatorios"),
+                (current_user["role_label"], "tu perfil"),
+            ],
+        ),
+        unsafe_allow_html=True,
+    )
+    st.caption("Roles disponibles: administrador general, administrador operativo y analista.")
+
+    if not (can_manage_users or can_manage_activation):
+        st.error("No tienes permisos para gestionar usuarios.")
+        return
+
+    roles_info = pd.DataFrame(
+        [
+            {
+                "rol": role_key,
+                "nombre": role_data["label"],
+                "descripcion": role_data["description"],
+                "permisos": ", ".join(role_data["permissions"]),
+            }
+            for role_key, role_data in ROLE_DEFINITIONS.items()
+        ]
+    )
+    st.dataframe(roles_info, use_container_width=True, hide_index=True)
+
+    users_df = storage_backend.list_users()
+    st.subheader("Usuarios actuales")
+    st.dataframe(users_df, use_container_width=True, hide_index=True)
+
+    if users_df.empty:
+        st.info("Aun no hay usuarios registrados.")
+        return
+
+    user_options = {
+        f"{row['username']} | {row['role_name']}": row.to_dict()
+        for _, row in users_df.iterrows()
+    }
+    selected_user_label = st.selectbox("Usuario a editar", options=list(user_options.keys()))
+    selected_user = user_options[selected_user_label]
+    selected_is_self = int(selected_user["id"]) == int(current_user["id"])
+
+    current_active_from = date_value_or_none(selected_user.get("active_from"))
+    current_active_until = date_value_or_none(selected_user.get("active_until"))
+    can_edit_access = can_manage_users or can_manage_activation
+
+    st.subheader("Actualizar usuario")
+    with st.form("edit_user_form"):
+        full_name = st.text_input(
+            "Nombre completo",
+            value=str(selected_user.get("full_name") or ""),
+            disabled=not can_manage_users,
+        )
+        email = st.text_input(
+            "Correo electronico",
+            value="" if pd.isna(selected_user.get("email")) else str(selected_user.get("email")),
+            disabled=not can_manage_users,
+        )
+        phone_number = st.text_input(
+            "Celular",
+            value="" if pd.isna(selected_user.get("phone_number")) else str(selected_user.get("phone_number")),
+            disabled=not can_manage_users,
+        )
+        role_keys = list(ROLE_DEFINITIONS.keys())
+        role_index = role_keys.index(selected_user["role_key"]) if selected_user["role_key"] in role_keys else 0
+        role_key = st.selectbox(
+            "Rol",
+            options=role_keys,
+            index=role_index,
+            format_func=lambda key: ROLE_DEFINITIONS[key]["label"],
+            disabled=not can_manage_users,
+        )
+        is_enabled = st.checkbox(
+            "Usuario habilitado",
+            value=bool(selected_user.get("is_enabled")),
+            disabled=not can_edit_access,
+        )
+        use_active_from = st.checkbox(
+            "Restringir fecha inicial",
+            value=current_active_from is not None,
+            key=f"edit_use_active_from_{selected_user['id']}",
+            disabled=not can_edit_access,
+        )
+        active_from = st.date_input(
+            "Activo desde",
+            value=current_active_from or datetime.now().date(),
+            key=f"edit_active_from_{selected_user['id']}",
+            disabled=(not can_edit_access) or (not use_active_from),
+        )
+        use_active_until = st.checkbox(
+            "Restringir fecha final",
+            value=current_active_until is not None,
+            key=f"edit_use_active_until_{selected_user['id']}",
+            disabled=not can_edit_access,
+        )
+        active_until = st.date_input(
+            "Activo hasta",
+            value=current_active_until or datetime.now().date(),
+            key=f"edit_active_until_{selected_user['id']}",
+            disabled=(not can_edit_access) or (not use_active_until),
+        )
+        new_password = st.text_input(
+            "Nueva contrasena",
+            type="password",
+            disabled=not can_manage_users,
+        )
+        confirm_password = st.text_input(
+            "Confirmar nueva contrasena",
+            type="password",
+            disabled=not can_manage_users,
+        )
+        submitted = st.form_submit_button("Guardar cambios", use_container_width=True)
+
+    if submitted:
+        if selected_is_self and can_edit_access and not is_enabled:
+            st.error("No puedes deshabilitar tu propio usuario desde esta sesion.")
+            return
+        if selected_is_self and can_manage_users and role_key != selected_user["role_key"]:
+            st.error("No puedes cambiar tu propio rol mientras estas autenticado.")
+            return
+        if can_manage_users and new_password:
+            if new_password != confirm_password:
+                st.error("Las contrasenas no coinciden.")
+                return
+            if not password_is_valid(new_password):
+                st.error("La nueva contrasena debe tener al menos 8 caracteres.")
+                return
+        if can_manage_users and (not email.strip() or not phone_number.strip()):
+            st.error("Correo electronico y celular son obligatorios.")
+            return
+
+        payload = {}
+        if can_manage_users:
+            payload.update(
+                {
+                    "full_name": full_name.strip(),
+                    "email": email.strip(),
+                    "phone_number": phone_number.strip(),
+                    "role_key": role_key,
+                }
+            )
+            if new_password:
+                payload["password"] = new_password
+        if can_edit_access:
+            payload.update(
+                {
+                    "is_enabled": is_enabled,
+                    "active_from": date_to_window_start(active_from) if use_active_from else None,
+                    "active_until": date_to_window_end(active_until) if use_active_until else None,
+                }
+            )
+
+        if payload.get("active_from") and payload.get("active_until") and payload["active_from"] > payload["active_until"]:
+            st.error("La fecha inicial no puede ser mayor que la fecha final.")
+            return
+
+        try:
+            storage_backend.update_user(int(selected_user["id"]), payload)
+        except Exception as exc:
+            st.error(f"No pude actualizar el usuario: {exc}")
+            return
+
+        if selected_is_self and can_manage_users:
+            current_user["full_name"] = full_name.strip()
+            current_user["email"] = email.strip()
+            current_user["phone_number"] = phone_number.strip()
+            set_authenticated_user(current_user)
+        st.success("Usuario actualizado.")
+        st.rerun()
+
+    if not can_manage_users:
+        st.info("Tu rol solo puede habilitar, deshabilitar y definir vigencia de usuarios.")
+        return
+
+    st.subheader("Crear usuario")
+    with st.form("create_user_form"):
+        username = st.text_input("Nuevo usuario")
+        full_name = st.text_input("Nombre completo", key="create_full_name")
+        email = st.text_input("Correo electronico", key="create_email")
+        phone_number = st.text_input("Celular", key="create_phone_number")
+        password = st.text_input("Contrasena inicial", type="password", key="create_password")
+        confirm_password = st.text_input("Confirmar contrasena", type="password", key="create_confirm_password")
+        role_key = st.selectbox(
+            "Rol inicial",
+            options=list(ROLE_DEFINITIONS.keys()),
+            format_func=lambda key: ROLE_DEFINITIONS[key]["label"],
+            key="create_role_key",
+        )
+        is_enabled = st.checkbox("Crear usuario habilitado", value=True, key="create_enabled")
+        use_active_from = st.checkbox("Definir fecha inicial", value=False, key="create_use_active_from")
+        active_from = st.date_input(
+            "Activo desde",
+            value=datetime.now().date(),
+            key="create_active_from",
+            disabled=not use_active_from,
+        )
+        use_active_until = st.checkbox("Definir fecha final", value=False, key="create_use_active_until")
+        active_until = st.date_input(
+            "Activo hasta",
+            value=datetime.now().date(),
+            key="create_active_until",
+            disabled=not use_active_until,
+        )
+        submitted = st.form_submit_button("Crear usuario", use_container_width=True)
+
+    if not submitted:
+        return
+
+    if password != confirm_password:
+        st.error("Las contrasenas no coinciden.")
+        return
+    if not password_is_valid(password):
+        st.error("La contrasena inicial debe tener al menos 8 caracteres.")
+        return
+    if not email.strip() or not phone_number.strip():
+        st.error("Correo electronico y celular son obligatorios.")
+        return
+
+    payload = {
+        "username": username,
+        "full_name": full_name,
+        "email": email.strip(),
+        "phone_number": phone_number.strip(),
+        "password": password,
+        "role_key": role_key,
+        "is_enabled": is_enabled,
+        "active_from": date_to_window_start(active_from) if use_active_from else None,
+        "active_until": date_to_window_end(active_until) if use_active_until else None,
+        "created_by": current_user["id"],
+    }
+    if payload["active_from"] and payload["active_until"] and payload["active_from"] > payload["active_until"]:
+        st.error("La fecha inicial no puede ser mayor que la fecha final.")
+        return
+
+    try:
+        storage_backend.create_user(payload)
+    except Exception as exc:
+        st.error(f"No pude crear el usuario: {exc}")
+        return
+
+    st.success("Usuario creado.")
+    st.rerun()
+
+
+def render_processing_page(storage_backend, current_user: dict | None) -> None:
+    st.markdown(
+        build_hero_panel(
+            title="Modulo TEC",
+            copy="Carga bases, revisa columnas, controla la configuracion del pipeline y descarga los entregables resultantes desde un unico flujo de trabajo.",
+            kicker="Procesamiento activo",
+            metrics=[
+                ("TEC", "modulo"),
+                (storage_backend.mode.upper(), "persistencia"),
+                (current_user["role_label"] if current_user else "Libre", "perfil"),
+            ],
+        ),
+        unsafe_allow_html=True,
+    )
+    can_manage_general_config = not storage_backend.auth_enabled() or user_has_permission(
+        "manage_general_config",
+        current_user,
+    )
+    can_view_history = not storage_backend.auth_enabled() or user_has_permission("view_history", current_user)
 
     uploaded_file = st.file_uploader("Sube tu archivo Excel o CSV", type=["xlsx", "xls", "xlsm", "csv"])
     if not uploaded_file:
-        if storage_backend.mode != "none":
+        if storage_backend.mode != "none" and can_view_history:
             st.info(f"Persistencia activa: `{storage_backend.mode}`")
             st.dataframe(storage_backend.list_recent_runs(10), use_container_width=True)
         else:
@@ -2201,47 +3067,57 @@ def main() -> None:
     with st.sidebar:
         st.header("Configuracion")
         st.caption(f"Persistencia: `{storage_backend.mode}`")
+        if not can_manage_general_config:
+            st.caption("Tu rol no puede cambiar la configuracion general. Se aplican los valores definidos por administracion.")
         st.caption("Si desmarcas una opcion, esa etapa no se aplicara en esta corrida.")
         st.markdown("**Placas**")
         config = {
             "aplicar_limpieza_placa": st.checkbox(
                 "Revisar y corregir placas automaticamente",
                 value=DEFAULT_CONFIG["aplicar_limpieza_placa"],
+                disabled=not can_manage_general_config,
                 help="Activa toda la etapa de analisis de placas antes de trabajar los tiempos.",
             ),
             "aplicar_ruido_con_respaldo": st.checkbox(
                 "Corregir espacios o simbolos cuando la placa limpia ya aparece en la base",
                 value=DEFAULT_CONFIG["aplicar_ruido_con_respaldo"],
+                disabled=not can_manage_general_config,
                 help="Ejemplo: convertir 'CFQ 004' en 'CFQ004' cuando la version limpia ya existe en la base.",
             ),
             "aplicar_ruido_sin_respaldo": st.checkbox(
                 "Corregir espacios o simbolos aunque no haya otra coincidencia",
                 value=DEFAULT_CONFIG["aplicar_ruido_sin_respaldo"],
+                disabled=not can_manage_general_config,
                 help="Aplica una limpieza mas agresiva a placas con guiones, espacios o simbolos.",
             ),
             "aplicar_coincidencia_unica_lista": st.checkbox(
                 "Corregir placas cuando hay una unica coincidencia clara en la base",
                 value=DEFAULT_CONFIG["aplicar_coincidencia_unica_lista"],
+                disabled=not can_manage_general_config,
                 help="Busca una sola candidata muy parecida dentro de toda la base y corrige hacia esa placa.",
             ),
             "aplicar_confusion_visual": st.checkbox(
                 "Corregir confusiones visuales como O/0, I/1 o S/5",
                 value=DEFAULT_CONFIG["aplicar_confusion_visual"],
+                disabled=not can_manage_general_config,
                 help="Corrige placas que parecen tener letras y numeros confundidos visualmente.",
             ),
             "aplicar_recorte_sufijo_x": st.checkbox(
                 "Quitar una X final cuando parece un sufijo extra",
                 value=DEFAULT_CONFIG["aplicar_recorte_sufijo_x"],
+                disabled=not can_manage_general_config,
                 help="Se usa en placas donde la X final parece agregada y la version recortada tiene sentido.",
             ),
             "aplicar_exclusion_placeholders": st.checkbox(
                 "Excluir placas de prueba o ejemplo",
                 value=DEFAULT_CONFIG["aplicar_exclusion_placeholders"],
+                disabled=not can_manage_general_config,
                 help="Elimina valores como placas placeholder o ejemplos que no deben analizarse.",
             ),
             "aplicar_reglas_manuales": st.checkbox(
                 "Aplicar las reglas manuales de la tabla inferior",
                 value=DEFAULT_CONFIG["aplicar_reglas_manuales"],
+                disabled=not can_manage_general_config,
                 help="Usa las correcciones o exclusiones definidas manualmente por ti.",
             ),
         }
@@ -2251,26 +3127,31 @@ def main() -> None:
                 "eliminar_bordes_caseta": st.checkbox(
                     "Eliminar registros incompletos al inicio o final de cada flujo",
                     value=DEFAULT_CONFIG["eliminar_bordes_caseta"],
+                    disabled=not can_manage_general_config,
                     help="Quita filas incompletas que quedan antes de que el flujo empiece bien o despues de que ya termino.",
                 ),
                 "aplicar_interpolacion": st.checkbox(
                     "Completar tiempos faltantes usando vehiculos vecinos del mismo flujo",
                     value=DEFAULT_CONFIG["aplicar_interpolacion"],
+                    disabled=not can_manage_general_config,
                     help="Reconstruye tiempos internos cuando hay anclas antes y despues dentro del mismo flujo.",
                 ),
                 "aplicar_mediana_local": st.checkbox(
                     "Hacer una segunda recuperacion usando medianas del mismo flujo",
                     value=DEFAULT_CONFIG["aplicar_mediana_local"],
+                    disabled=not can_manage_general_config,
                     help="Intenta completar tiempos pendientes con duraciones tipicas observadas en ese mismo flujo.",
                 ),
                 "aplicar_donantes": st.checkbox(
                     "Hacer una tercera recuperacion usando casos similares",
                     value=DEFAULT_CONFIG["aplicar_donantes"],
+                    disabled=not can_manage_general_config,
                     help="Usa medianas de casetas, dias o sentidos parecidos como apoyo para recuperar tiempos.",
                 ),
                 "aplicar_swap_final_t2_t3": st.checkbox(
                     "Corregir un posible intercambio final entre llegada y salida de caseta",
                     value=DEFAULT_CONFIG["aplicar_swap_final_t2_t3"],
+                    disabled=not can_manage_general_config,
                     help="Aplica un ajuste final si los tiempos de llegada y salida quedaron invertidos.",
                 ),
             }
@@ -2281,6 +3162,7 @@ def main() -> None:
         pd.DataFrame(DEFAULT_MANUAL_RULES),
         num_rows="dynamic",
         use_container_width=True,
+        disabled=not can_manage_general_config,
         key="manual_rules_editor",
     )
 
@@ -2370,9 +3252,71 @@ def main() -> None:
         with tab6:
             st.dataframe(export_tables["bloques_decision"], use_container_width=True)
 
-        if storage_backend.mode != "none":
+        if storage_backend.mode != "none" and can_view_history:
             st.subheader("Historial guardado")
             st.dataframe(storage_backend.list_recent_runs(20), use_container_width=True)
+
+
+def main() -> None:
+    st.set_page_config(page_title=APP_TITLE, layout="wide")
+    inject_global_styles()
+    storage_backend = build_storage_backend(load_streamlit_secrets())
+
+    if storage_backend.auth_enabled():
+        current_user = get_authenticated_user()
+        if not current_user:
+            render_login_gate(storage_backend)
+            return
+    else:
+        current_user = None
+
+    page_options = ["Inicio"]
+    if not storage_backend.auth_enabled() or user_has_permission("process_files", current_user):
+        page_options.append("TEC")
+    page_options.extend(["Relevamientos", "Auditorias", "Satisfaccion", "Flujogramas"])
+    if storage_backend.auth_enabled() and (
+        user_has_permission("manage_users", current_user)
+        or user_has_permission("manage_user_activation", current_user)
+    ):
+        page_options.append("Usuarios")
+    if storage_backend.mode != "none" and (
+        not storage_backend.auth_enabled() or user_has_permission("view_history", current_user)
+    ):
+        page_options.append("Historial")
+
+    current_page = st.session_state.get(APP_NAV_KEY, "Inicio")
+    if current_page not in page_options:
+        current_page = "Inicio"
+        st.session_state[APP_NAV_KEY] = current_page
+
+    with st.sidebar:
+        if current_user:
+            st.header("Sesion")
+            st.write(current_user["full_name"])
+            st.caption(f"Usuario: {current_user['username']}")
+            st.caption(f"Rol: {current_user['role_label']}")
+            st.caption(describe_access_window(current_user.get("active_from"), current_user.get("active_until")))
+            if st.button("Cerrar sesion", use_container_width=True):
+                clear_authenticated_user()
+                st.rerun()
+            st.divider()
+        page = st.radio("Modulo", options=page_options, index=page_options.index(current_page))
+        st.session_state[APP_NAV_KEY] = page
+
+    if page == "Inicio":
+        render_home_page(current_user)
+        return
+    if page == "Usuarios":
+        render_user_management_page(storage_backend, current_user)
+        return
+    if page == "Historial":
+        render_history_page(storage_backend)
+        return
+    if page in MODULE_PLACEHOLDERS:
+        render_placeholder_module_page(page)
+        return
+
+    render_processing_page(storage_backend, current_user)
 
 
 if __name__ == "__main__":
