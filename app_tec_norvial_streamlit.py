@@ -4,12 +4,14 @@ from datetime import datetime, time, timedelta
 from io import BytesIO
 from pathlib import Path
 import re
+import unicodedata
 import zipfile
 
 import pandas as pd
 import streamlit as st
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.shared import Inches
 from PIL import Image, ImageChops
 from streamlit.errors import StreamlitSecretNotFoundError
 
@@ -27,6 +29,10 @@ from app_storage import build_storage_backend
 APP_TITLE = "Procesador TEC de Peajes"
 APP_NAV_KEY = "app_selected_page"
 CONTRACTOR_LOGO_PATH = Path(__file__).parent / "ChatGPT Image 18 mar 2026, 03_37_00 a.m..png"
+INFORME_TEMPLATE_CANDIDATES = (
+    Path(__file__).parent / "templates" / "Informe TEC NORVIAL - 2022.docx",
+    Path(r"C:\Users\chrys\OneDrive\Dic Virtual D\work\2026\CIDATT\TEC\Archivos Originales\Informe TEC NORVIAL - 2022.docx"),
+)
 
 MODULE_CATALOG = [
     {
@@ -2146,6 +2152,7 @@ def derive_output_filenames(uploaded_name: str) -> dict[str, str]:
             "clean_excel": f"{stem}_limpio.xlsx",
             "report_excel": f"Resultados {label}.xlsx",
             "report_docx": f"Tablas {label} para informe.docx",
+            "report_docx_model": f"Informe {label} modelo 2022.docx",
             "extra_excel": f"Resultados {label} complementarios.xlsx",
         }
     return {
@@ -2153,6 +2160,7 @@ def derive_output_filenames(uploaded_name: str) -> dict[str, str]:
         "clean_excel": f"{stem}_limpio.xlsx",
         "report_excel": f"{stem}_resultados.xlsx",
         "report_docx": f"{stem}_tablas_informe.docx",
+        "report_docx_model": f"{stem}_informe_modelo_2022.docx",
         "extra_excel": f"{stem}_resultados_complementarios.xlsx",
     }
 
@@ -2221,6 +2229,192 @@ def agregar_tabla_docx(doc: Document, titulo: str, tabla: pd.DataFrame) -> None:
             celdas[idx].text = "" if pd.isna(valor) else str(valor)
 
 
+def resolve_informe_template_path() -> Path | None:
+    for candidate in INFORME_TEMPLATE_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def write_dataframe_to_existing_docx_table(table, tabla: pd.DataFrame) -> None:
+    while len(table.columns) < len(tabla.columns):
+        table.add_column(Inches(1.0))
+
+    while len(table.rows) > 1:
+        table._tbl.remove(table.rows[-1]._tr)
+
+    if not table.rows:
+        table.add_row()
+
+    header_cells = table.rows[0].cells
+    for idx, cell in enumerate(header_cells):
+        cell.text = str(tabla.columns[idx]) if idx < len(tabla.columns) else ""
+
+    for fila in tabla.itertuples(index=False):
+        celdas = table.add_row().cells
+        for idx, cell in enumerate(celdas):
+            if idx >= len(fila):
+                cell.text = ""
+                continue
+            valor = fila[idx]
+            cell.text = "" if pd.isna(valor) else str(valor)
+
+
+def normalize_text_key(value: object) -> str:
+    text = "" if value is None else str(value)
+    normalized = unicodedata.normalize("NFKD", text)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", ascii_only).strip().lower()
+
+
+def replace_docx_paragraph_text(doc: Document, search_text: str, replacement: str) -> bool:
+    for paragraph in doc.paragraphs:
+        if search_text in paragraph.text:
+            paragraph.text = replacement
+            return True
+    return False
+
+
+def replace_docx_paragraph_contains(doc: Document, search_snippet: str, replacement: str) -> bool:
+    snippet_key = normalize_text_key(search_snippet)
+    for paragraph in doc.paragraphs:
+        if snippet_key in normalize_text_key(paragraph.text):
+            paragraph.text = replacement
+            return True
+    return False
+
+
+def classify_peaje_bucket(peaje: object) -> str:
+    peaje_key = normalize_text_key(peaje)
+    if "paraiso" in peaje_key:
+        return "paraiso"
+    if "variante" in peaje_key:
+        return "variante"
+    if "serpentin" in peaje_key and "pesaje" in peaje_key:
+        return "serpentin_pesaje"
+    if "serpentin" in peaje_key:
+        return "serpentin"
+    return peaje_key or "otros"
+
+
+def build_frequency_table_for_bucket(df_resultados: pd.DataFrame, bucket: str) -> pd.DataFrame:
+    column_map = {
+        "paraiso": lambda caseta: f"PARAISO {int(caseta)}",
+        "variante": lambda caseta: f"VARIANTE {int(caseta)}",
+        "serpentin": lambda caseta: f"Serpentin Caseta {int(caseta)}",
+        "serpentin_pesaje": lambda caseta: f"Serpentin Pesaje Caseta {int(caseta)}",
+    }
+    formatter = column_map.get(bucket, lambda caseta: f"Caseta {int(caseta)}")
+
+    sub_df = df_resultados[df_resultados["PEAJE_BUCKET"] == bucket].copy()
+    if sub_df.empty:
+        return pd.DataFrame(columns=["Cantidad de usuarios en la cola", "Total"])
+
+    tabla = pd.pivot_table(
+        sub_df,
+        index="COLA_ESPERA_USUARIOS",
+        columns="CASETA",
+        values="PLACA_FINAL",
+        aggfunc="size",
+        fill_value=0,
+    ).sort_index()
+    tabla.columns = [formatter(columna) for columna in tabla.columns]
+    tabla["Total"] = tabla.sum(axis=1)
+    tabla.loc["Total general"] = tabla.sum(axis=0)
+    return tabla.reset_index().rename(columns={"COLA_ESPERA_USUARIOS": "Cantidad de usuarios en la cola"})
+
+
+def build_template_compliance_text(informe_package: dict[str, object]) -> str:
+    tabla_tec_peaje = informe_package["tabla_tec_peaje"]
+    if tabla_tec_peaje.empty:
+        return (
+            "En la Tabla N° 4 no se identificaron resultados suficientes para evaluar el cumplimiento del TEC "
+            "por peaje y sentido."
+        )
+
+    fila_critica = tabla_tec_peaje.sort_values("Tiempo de Espera en Cola - TEC", ascending=False).iloc[0]
+    valor_critico = float(fila_critica["Tiempo de Espera en Cola - TEC"])
+    if valor_critico <= 3:
+        estado = "no supera los 3 minutos promedio"
+    else:
+        estado = "supera los 3 minutos promedio"
+
+    return (
+        "En la Tabla N° 4 se observa que el mayor promedio de TEC por peaje y sentido "
+        f"corresponde a {fila_critica['Peaje']} - {fila_critica['Sentido de Circulacion']}, con {valor_critico:.2f} minutos, "
+        f"por lo que {estado} para la atencion de los usuarios."
+    )
+
+
+def build_template_conclusion_text(informe_package: dict[str, object]) -> str:
+    tabla_tec_peaje = informe_package["tabla_tec_peaje"]
+    tabla_cola_maxima = informe_package["tabla_cola_maxima"]
+
+    if tabla_tec_peaje.empty:
+        return (
+            "No se cuenta con resultados suficientes en la base procesada para emitir conclusiones automaticas "
+            "con el modelo de informe."
+        )
+
+    fila_critica = tabla_tec_peaje.sort_values("Tiempo de Espera en Cola - TEC", ascending=False).iloc[0]
+    valor_critico = float(fila_critica["Tiempo de Espera en Cola - TEC"])
+    cola_texto = ""
+    if not tabla_cola_maxima.empty:
+        fila_cola = tabla_cola_maxima.sort_values("Cola maxima real", ascending=False).iloc[0]
+        cola_texto = (
+            f" Asimismo, la mayor cola maxima real se observo en {fila_cola['Peaje']} - caseta "
+            f"{fila_cola['Caseta Controlada']} - {fila_cola['Sentido de Circulacion']}, con "
+            f"{int(fila_cola['Cola maxima real'])} usuarios."
+        )
+
+    return (
+        "De la tabla N° 4 del presente informe, se evidencia que el mayor TEC promedio fue registrado en "
+        f"{fila_critica['Peaje']} - {fila_critica['Sentido de Circulacion']}, con {valor_critico:.2f} minutos."
+        + cola_texto
+    )
+
+
+def to_templated_docx_bytes(report_label: str, informe_package: dict[str, object]) -> bytes:
+    template_path = resolve_informe_template_path()
+    if template_path is None:
+        return to_docx_bytes(report_label, informe_package)
+
+    doc = Document(template_path)
+    table_mapping = {
+        3: informe_package["tabla_tec_caseta"],
+        4: informe_package["tabla_tec_peaje"],
+        5: informe_package["tabla_frecuencia_paraiso"],
+        6: informe_package["tabla_frecuencia_serpentin"],
+        7: informe_package["tabla_frecuencia_serpentin_pesaje"],
+        8: informe_package["tabla_frecuencia_variante"],
+    }
+
+    for table_idx, tabla in table_mapping.items():
+        if table_idx < len(doc.tables):
+            write_dataframe_to_existing_docx_table(doc.tables[table_idx], tabla)
+
+    fuente_actualizada = f"Fuente: Base procesada automaticamente por la aplicacion TEC para {report_label}."
+    for paragraph in doc.paragraphs:
+        if "Fuente: Labores de campo realizadas" in paragraph.text:
+            paragraph.text = fuente_actualizada
+
+    replace_docx_paragraph_contains(
+        doc,
+        "los resultados promedios por cada peaje/pesaje segun sentido",
+        build_template_compliance_text(informe_package),
+    )
+    replace_docx_paragraph_contains(
+        doc,
+        "de la tabla n 4 del presente informe",
+        build_template_conclusion_text(informe_package),
+    )
+
+    output = BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return output.getvalue()
+
+
 def q85(serie: pd.Series) -> float:
     return float(serie.quantile(0.85))
 
@@ -2284,10 +2478,15 @@ def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
         columns=["Peaje", "Caseta Controlada", "Sentido de Circulacion", "Cola maxima real", "Vehiculos evaluados"]
     )
     tabla_frecuencia_paraiso_informe = pd.DataFrame(columns=["Cantidad de usuarios en la cola", "Total"])
+    tabla_frecuencia_serpentin_informe = pd.DataFrame(columns=["Cantidad de usuarios en la cola", "Total"])
+    tabla_frecuencia_serpentin_pesaje_informe = pd.DataFrame(columns=["Cantidad de usuarios en la cola", "Total"])
     tabla_frecuencia_variante_informe = pd.DataFrame(columns=["Cantidad de usuarios en la cola", "Total"])
     resumen_narrativo = pd.DataFrame({"Texto sugerido para informe": ["No hay datos suficientes para generar resultados de informe."]})
 
     if not df_resultados.empty:
+        df_resultados = df_resultados.copy()
+        df_resultados["PEAJE_BUCKET"] = df_resultados["PEAJE"].map(classify_peaje_bucket)
+
         tabla_tec_caseta = (
             df_resultados.groupby(["PEAJE", "CASETA", "SENTIDO"], dropna=False)
             .agg(
@@ -2350,25 +2549,12 @@ def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
             }
         )
 
-        def construir_tabla_frecuencia(peaje: str) -> pd.DataFrame:
-            sub_df = df_resultados[df_resultados["PEAJE"] == peaje].copy()
-            if sub_df.empty:
-                return pd.DataFrame(columns=["Cantidad de usuarios en la cola", "Total"])
-            tabla = pd.pivot_table(
-                sub_df,
-                index="COLA_ESPERA_USUARIOS",
-                columns="CASETA",
-                values="PLACA_FINAL",
-                aggfunc="size",
-                fill_value=0,
-            ).sort_index()
-            tabla.columns = [f"{peaje} | {int(columna)}" for columna in tabla.columns]
-            tabla["Total"] = tabla.sum(axis=1)
-            tabla.loc["Total general"] = tabla.sum(axis=0)
-            return tabla.reset_index().rename(columns={"COLA_ESPERA_USUARIOS": "Cantidad de usuarios en la cola"})
-
-        tabla_frecuencia_paraiso_informe = formatear_tabla_frecuencia(construir_tabla_frecuencia("PARAISO"))
-        tabla_frecuencia_variante_informe = formatear_tabla_frecuencia(construir_tabla_frecuencia("VARIANTE"))
+        tabla_frecuencia_paraiso_informe = formatear_tabla_frecuencia(build_frequency_table_for_bucket(df_resultados, "paraiso"))
+        tabla_frecuencia_serpentin_informe = formatear_tabla_frecuencia(build_frequency_table_for_bucket(df_resultados, "serpentin"))
+        tabla_frecuencia_serpentin_pesaje_informe = formatear_tabla_frecuencia(
+            build_frequency_table_for_bucket(df_resultados, "serpentin_pesaje")
+        )
+        tabla_frecuencia_variante_informe = formatear_tabla_frecuencia(build_frequency_table_for_bucket(df_resultados, "variante"))
 
         fila_mayor_tec_caseta = tabla_tec_caseta.sort_values("TEC_MINUTOS", ascending=False).iloc[0]
         fila_mayor_tec_peaje = tabla_tec_peaje.sort_values("TEC_MINUTOS", ascending=False).iloc[0]
@@ -2404,6 +2590,8 @@ def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
         "tec_peaje_sentido": tabla_tec_peaje_informe,
         "cola_maxima_real": tabla_cola_maxima_informe,
         "cola_paraiso": tabla_frecuencia_paraiso_informe,
+        "cola_serpentin": tabla_frecuencia_serpentin_informe,
+        "cola_serpentin_pesaje": tabla_frecuencia_serpentin_pesaje_informe,
         "cola_variante": tabla_frecuencia_variante_informe,
         "texto_informe": resumen_narrativo,
     }
@@ -2414,6 +2602,8 @@ def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
         "tabla_tec_peaje": tabla_tec_peaje_informe,
         "tabla_cola_maxima": tabla_cola_maxima_informe,
         "tabla_frecuencia_paraiso": tabla_frecuencia_paraiso_informe,
+        "tabla_frecuencia_serpentin": tabla_frecuencia_serpentin_informe,
+        "tabla_frecuencia_serpentin_pesaje": tabla_frecuencia_serpentin_pesaje_informe,
         "tabla_frecuencia_variante": tabla_frecuencia_variante_informe,
         "texto_informe": resumen_narrativo,
     }
@@ -3426,6 +3616,7 @@ def render_processing_page(storage_backend, current_user: dict | None) -> None:
         excel_bytes = to_exact_excel_bytes(exact_export)
         report_excel_bytes = to_excel_bytes(informe_package["excel_sheets"])
         report_docx_bytes = to_docx_bytes(output_names["report_label"], informe_package)
+        report_docx_model_bytes = to_templated_docx_bytes(output_names["report_label"], informe_package)
         complementary_excel_bytes = to_excel_bytes(complementary_package["excel_sheets"])
         storage_backend.save_run(
             build_run_payload(uploaded_file.name, mapping, config, export_tables)
@@ -3458,6 +3649,13 @@ def render_processing_page(storage_backend, current_user: dict | None) -> None:
             "Descargar Tablas Informe",
             data=report_docx_bytes,
             file_name=output_names["report_docx"],
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+        )
+        st.download_button(
+            "Descargar Informe Modelo 2022",
+            data=report_docx_model_bytes,
+            file_name=output_names["report_docx_model"],
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             use_container_width=True,
         )
