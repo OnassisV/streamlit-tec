@@ -2820,6 +2820,37 @@ def password_is_valid(password: str) -> bool:
     return len(password) >= 8
 
 
+def build_available_users_df(users_df: pd.DataFrame) -> pd.DataFrame:
+    available_users_df = users_df.copy()
+    if "is_enabled" in available_users_df.columns:
+        available_users_df["estado"] = available_users_df["is_enabled"].map(
+            {True: "Habilitado", False: "Deshabilitado"}
+        ).fillna("Sin dato")
+    for column_name in ["active_from", "active_until", "last_login_at", "created_at"]:
+        if column_name in available_users_df.columns:
+            available_users_df[column_name] = pd.to_datetime(
+                available_users_df[column_name], errors="coerce"
+            ).dt.strftime("%Y-%m-%d %H:%M")
+            available_users_df[column_name] = available_users_df[column_name].fillna("-")
+
+    visible_columns = [
+        column_name
+        for column_name in [
+            "username",
+            "full_name",
+            "role_name",
+            "estado",
+            "email",
+            "phone_number",
+            "active_from",
+            "active_until",
+            "last_login_at",
+        ]
+        if column_name in available_users_df.columns
+    ]
+    return available_users_df[visible_columns]
+
+
 def render_bootstrap_admin(storage_backend) -> None:
     _, center_col, _ = st.columns([1, 0.9, 1], gap="large")
     with center_col:
@@ -2868,6 +2899,11 @@ def render_login_gate(storage_backend):
         render_bootstrap_admin(storage_backend)
         return None
 
+    users_df = storage_backend.list_users().copy()
+    if "id" in users_df.columns:
+        users_df["id"] = pd.to_numeric(users_df["id"], errors="coerce")
+        users_df = users_df[users_df["id"].notna()].copy()
+
     _, center_col, _ = st.columns([1, 0.85, 1], gap="large")
     with center_col:
         st.markdown(
@@ -2878,6 +2914,8 @@ def render_login_gate(storage_backend):
             username = st.text_input("Usuario")
             password = st.text_input("Contrasena", type="password")
             submitted = st.form_submit_button("Ingresar", use_container_width=True)
+        st.subheader("Usuarios disponibles")
+        st.dataframe(build_available_users_df(users_df), use_container_width=True, hide_index=True)
 
     if not submitted:
         return None
@@ -2952,34 +2990,8 @@ def render_user_management_page(storage_backend, current_user: dict) -> None:
         users_df = users_df[users_df["id"].notna()].copy()
 
     st.subheader("Usuarios actuales")
-    available_users_df = users_df.copy()
-    if "is_enabled" in available_users_df.columns:
-        available_users_df["estado"] = available_users_df["is_enabled"].map({True: "Habilitado", False: "Deshabilitado"}).fillna("Sin dato")
-    for column_name in ["active_from", "active_until", "last_login_at", "created_at"]:
-        if column_name in available_users_df.columns:
-            available_users_df[column_name] = pd.to_datetime(available_users_df[column_name], errors="coerce").dt.strftime("%Y-%m-%d %H:%M")
-            available_users_df[column_name] = available_users_df[column_name].fillna("-")
-    visible_columns = [
-        column_name
-        for column_name in [
-            "username",
-            "full_name",
-            "role_name",
-            "estado",
-            "email",
-            "phone_number",
-            "active_from",
-            "active_until",
-            "last_login_at",
-        ]
-        if column_name in available_users_df.columns
-    ]
-    st.caption(f"Usuarios disponibles en la base de datos: {len(available_users_df)}")
-    st.dataframe(available_users_df[visible_columns], use_container_width=True, hide_index=True)
-    if "username" in available_users_df.columns:
-        usernames = ", ".join(str(username) for username in available_users_df["username"].dropna().tolist())
-        if usernames:
-            st.caption(f"Disponibles: {usernames}")
+    st.caption(f"Usuarios disponibles en la base de datos: {len(users_df)}")
+    st.dataframe(build_available_users_df(users_df), use_container_width=True, hide_index=True)
 
     if users_df.empty:
         st.info("Aun no hay usuarios registrados.")
