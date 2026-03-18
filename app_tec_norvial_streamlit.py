@@ -28,6 +28,7 @@ from app_storage import build_storage_backend
 
 APP_TITLE = "Procesador TEC de Peajes"
 APP_NAV_KEY = "app_selected_page"
+TEC_RESULT_STATE_KEY = "tec_last_processing_result"
 CONTRACTOR_LOGO_PATH = Path(__file__).parent / "ChatGPT Image 18 mar 2026, 03_37_00 a.m..png"
 INFORME_TEMPLATE_CANDIDATES = (
     Path(__file__).parent / "templates" / "Informe TEC NORVIAL - 2022.docx",
@@ -2165,6 +2166,125 @@ def derive_output_filenames(uploaded_name: str) -> dict[str, str]:
     }
 
 
+def build_processing_signature(uploaded_name: str, selected_sheet: str | None) -> str:
+    return f"{uploaded_name}::{selected_sheet or ''}"
+
+
+def build_processing_artifacts(
+    uploaded_name: str,
+    selected_sheet: str | None,
+    result: dict[str, object],
+) -> dict[str, object]:
+    export_tables = result["export_tables"]
+    exact_export = result["exact_export"]
+    informe_package = result["informe_package"]
+    complementary_package = result["complementary_package"]
+    output_names = derive_output_filenames(uploaded_name)
+    return {
+        "input_signature": build_processing_signature(uploaded_name, selected_sheet),
+        "source_name": uploaded_name,
+        "selected_sheet": selected_sheet,
+        "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "export_tables": export_tables,
+        "output_names": output_names,
+        "excel_bytes": to_exact_excel_bytes(exact_export),
+        "report_excel_bytes": to_excel_bytes(informe_package["excel_sheets"]),
+        "report_docx_bytes": to_docx_bytes(output_names["report_label"], informe_package),
+        "report_docx_model_bytes": to_templated_docx_bytes(output_names["report_label"], informe_package),
+        "complementary_excel_bytes": to_excel_bytes(complementary_package["excel_sheets"]),
+    }
+
+
+def render_processing_outputs(processed_payload: dict[str, object], storage_backend, can_view_history: bool) -> None:
+    export_tables = processed_payload["export_tables"]
+    output_names = processed_payload["output_names"]
+
+    info_col, clear_col = st.columns([4, 1])
+    info_col.caption(
+        "Resultados disponibles para "
+        f"{processed_payload['source_name']}"
+        + (
+            f" | Hoja: {processed_payload['selected_sheet']}"
+            if processed_payload["selected_sheet"]
+            else ""
+        )
+        + f" | Procesado: {processed_payload['processed_at']}"
+    )
+    if clear_col.button("Limpiar resultado", use_container_width=True, key="clear_processing_result"):
+        st.session_state.pop(TEC_RESULT_STATE_KEY, None)
+        st.rerun()
+
+    resumen = export_tables["reporte_resumen"]
+    general = resumen[resumen["seccion"] == "general"]
+    c1, c2, c3, c4 = st.columns(4)
+    metric_values = {row["indicador"]: row["valor"] for _, row in general.iterrows()}
+    c1.metric("Filas entrada", metric_values.get("filas_entrada", 0))
+    c2.metric("Base limpia", metric_values.get("filas_base_limpia", 0))
+    c3.metric("Eliminados", metric_values.get("filas_eliminadas", 0))
+    c4.metric("Pendientes", metric_values.get("filas_pendientes", 0))
+
+    st.download_button(
+        "Descargar Excel",
+        data=processed_payload["excel_bytes"],
+        file_name=output_names["clean_excel"],
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key="download_clean_excel",
+    )
+    st.download_button(
+        "Descargar Resultados Informe",
+        data=processed_payload["report_excel_bytes"],
+        file_name=output_names["report_excel"],
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key="download_report_excel",
+    )
+    st.download_button(
+        "Descargar Tablas Informe",
+        data=processed_payload["report_docx_bytes"],
+        file_name=output_names["report_docx"],
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        use_container_width=True,
+        key="download_report_docx",
+    )
+    st.download_button(
+        "Descargar Informe Modelo 2022",
+        data=processed_payload["report_docx_model_bytes"],
+        file_name=output_names["report_docx_model"],
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        use_container_width=True,
+        key="download_model_docx",
+    )
+    st.download_button(
+        "Descargar Resultados Complementarios",
+        data=processed_payload["complementary_excel_bytes"],
+        file_name=output_names["extra_excel"],
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key="download_complementary_excel",
+    )
+
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        ["Resumen", "Base limpia", "Eliminados", "Pendientes", "Revision placas", "Bloques"]
+    )
+    with tab1:
+        st.dataframe(export_tables["reporte_resumen"], use_container_width=True)
+    with tab2:
+        st.dataframe(export_tables["base_limpia"], use_container_width=True)
+    with tab3:
+        st.dataframe(export_tables["casos_eliminados"], use_container_width=True)
+    with tab4:
+        st.dataframe(export_tables["casos_pendientes"], use_container_width=True)
+    with tab5:
+        st.dataframe(export_tables["revision_placas"], use_container_width=True)
+    with tab6:
+        st.dataframe(export_tables["bloques_decision"], use_container_width=True)
+
+    if storage_backend.mode != "none" and can_view_history:
+        st.subheader("Historial guardado")
+        st.dataframe(storage_backend.list_recent_runs(20), use_container_width=True)
+
+
 def calcular_cola_espera_real(grupo: pd.DataFrame) -> pd.DataFrame:
     grupo = grupo.sort_values(
         [
@@ -2328,49 +2448,47 @@ def build_template_compliance_text(informe_package: dict[str, object]) -> str:
     tabla_tec_peaje = informe_package["tabla_tec_peaje"]
     if tabla_tec_peaje.empty:
         return (
-            "En la Tabla N° 4 no se identificaron resultados suficientes para evaluar el cumplimiento del TEC "
-            "por peaje y sentido."
+            "En la Tabla N° 4 no se cuenta con resultados suficientes para evaluar el cumplimiento del TEC "
+            "por peaje/pesaje segun sentido."
         )
 
     fila_critica = tabla_tec_peaje.sort_values("Tiempo de Espera en Cola - TEC", ascending=False).iloc[0]
     valor_critico = float(fila_critica["Tiempo de Espera en Cola - TEC"])
     if valor_critico <= 3:
-        estado = "no supera los 3 minutos promedio"
-    else:
-        estado = "supera los 3 minutos promedio"
+        return (
+            "En la Tabla N° 4, observamos que los resultados promedios por cada peaje/pesaje "
+            "segun sentido no superan los 3 minutos promedio para la atencion de los usuarios."
+        )
 
     return (
-        "En la Tabla N° 4 se observa que el mayor promedio de TEC por peaje y sentido "
-        f"corresponde a {fila_critica['Peaje']} - {fila_critica['Sentido de Circulacion']}, con {valor_critico:.2f} minutos, "
-        f"por lo que {estado} para la atencion de los usuarios."
+        "En la Tabla N° 4, observamos que los resultados promedios por cada peaje/pesaje segun sentido "
+        f"muestran que {fila_critica['Peaje']} - {fila_critica['Sentido de Circulacion']} alcanza {valor_critico:.2f} minutos promedio, "
+        "superando los 3 minutos promedio para la atencion de los usuarios."
     )
 
 
 def build_template_conclusion_text(informe_package: dict[str, object]) -> str:
     tabla_tec_peaje = informe_package["tabla_tec_peaje"]
-    tabla_cola_maxima = informe_package["tabla_cola_maxima"]
 
     if tabla_tec_peaje.empty:
         return (
-            "No se cuenta con resultados suficientes en la base procesada para emitir conclusiones automaticas "
-            "con el modelo de informe."
+            "No se cuenta con resultados suficientes en la base procesada para emitir conclusiones con el modelo de informe."
         )
 
     fila_critica = tabla_tec_peaje.sort_values("Tiempo de Espera en Cola - TEC", ascending=False).iloc[0]
     valor_critico = float(fila_critica["Tiempo de Espera en Cola - TEC"])
-    cola_texto = ""
-    if not tabla_cola_maxima.empty:
-        fila_cola = tabla_cola_maxima.sort_values("Cola maxima real", ascending=False).iloc[0]
-        cola_texto = (
-            f" Asimismo, la mayor cola maxima real se observo en {fila_cola['Peaje']} - caseta "
-            f"{fila_cola['Caseta Controlada']} - {fila_cola['Sentido de Circulacion']}, con "
-            f"{int(fila_cola['Cola maxima real'])} usuarios."
+    if valor_critico <= 3:
+        return (
+            "De la tabla N° 4 del presente Informe, se evidencia que los valores obtenidos por los niveles de servicio "
+            "que el Concesionario tiene actualmente se encuentran dentro de los niveles que deben ser cumplidos, debido a que, "
+            "durante el periodo muestreado en cada unidad de peaje/pesaje el promedio de la muestra no supero los 3 minutos; "
+            "lo cual no amerita por ahora la modificacion del sistema de atencion."
         )
 
     return (
-        "De la tabla N° 4 del presente informe, se evidencia que el mayor TEC promedio fue registrado en "
-        f"{fila_critica['Peaje']} - {fila_critica['Sentido de Circulacion']}, con {valor_critico:.2f} minutos."
-        + cola_texto
+        "De la tabla N° 4 del presente Informe, se evidencia que los valores obtenidos por los niveles de servicio "
+        f"superan el umbral esperado en {fila_critica['Peaje']} - {fila_critica['Sentido de Circulacion']}, donde el promedio "
+        f"alcanzado fue de {valor_critico:.2f} minutos; por lo que corresponde revisar las condiciones operativas del sistema de atencion."
     )
 
 
@@ -2392,11 +2510,6 @@ def to_templated_docx_bytes(report_label: str, informe_package: dict[str, object
     for table_idx, tabla in table_mapping.items():
         if table_idx < len(doc.tables):
             write_dataframe_to_existing_docx_table(doc.tables[table_idx], tabla)
-
-    fuente_actualizada = f"Fuente: Base procesada automaticamente por la aplicacion TEC para {report_label}."
-    for paragraph in doc.paragraphs:
-        if "Fuente: Labores de campo realizadas" in paragraph.text:
-            paragraph.text = fuente_actualizada
 
     replace_docx_paragraph_contains(
         doc,
@@ -3589,6 +3702,9 @@ def render_processing_page(storage_backend, current_user: dict | None) -> None:
         key="manual_rules_editor",
     )
 
+    current_signature = build_processing_signature(uploaded_file.name, selected_sheet)
+    processed_payload = st.session_state.get(TEC_RESULT_STATE_KEY)
+
     if st.button("Procesar base", type="primary", use_container_width=True):
         faltantes = [campo for campo in ["PLACA", "LLEGADA COLA", "LLEGADA CASETA", "SALIDA CASETA"] if not mapping.get(campo)]
         if faltantes:
@@ -3609,83 +3725,17 @@ def render_processing_page(storage_backend, current_user: dict | None) -> None:
             return
 
         export_tables = result["export_tables"]
-        exact_export = result["exact_export"]
-        informe_package = result["informe_package"]
-        complementary_package = result["complementary_package"]
-        output_names = derive_output_filenames(uploaded_file.name)
-        excel_bytes = to_exact_excel_bytes(exact_export)
-        report_excel_bytes = to_excel_bytes(informe_package["excel_sheets"])
-        report_docx_bytes = to_docx_bytes(output_names["report_label"], informe_package)
-        report_docx_model_bytes = to_templated_docx_bytes(output_names["report_label"], informe_package)
-        complementary_excel_bytes = to_excel_bytes(complementary_package["excel_sheets"])
         storage_backend.save_run(
             build_run_payload(uploaded_file.name, mapping, config, export_tables)
         )
 
-        resumen = export_tables["reporte_resumen"]
-        general = resumen[resumen["seccion"] == "general"]
-        c1, c2, c3, c4 = st.columns(4)
-        metric_values = {row["indicador"]: row["valor"] for _, row in general.iterrows()}
-        c1.metric("Filas entrada", metric_values.get("filas_entrada", 0))
-        c2.metric("Base limpia", metric_values.get("filas_base_limpia", 0))
-        c3.metric("Eliminados", metric_values.get("filas_eliminadas", 0))
-        c4.metric("Pendientes", metric_values.get("filas_pendientes", 0))
+        processed_payload = build_processing_artifacts(uploaded_file.name, selected_sheet, result)
+        st.session_state[TEC_RESULT_STATE_KEY] = processed_payload
 
-        st.download_button(
-            "Descargar Excel",
-            data=excel_bytes,
-            file_name=output_names["clean_excel"],
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-        st.download_button(
-            "Descargar Resultados Informe",
-            data=report_excel_bytes,
-            file_name=output_names["report_excel"],
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-        st.download_button(
-            "Descargar Tablas Informe",
-            data=report_docx_bytes,
-            file_name=output_names["report_docx"],
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True,
-        )
-        st.download_button(
-            "Descargar Informe Modelo 2022",
-            data=report_docx_model_bytes,
-            file_name=output_names["report_docx_model"],
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True,
-        )
-        st.download_button(
-            "Descargar Resultados Complementarios",
-            data=complementary_excel_bytes,
-            file_name=output_names["extra_excel"],
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-            ["Resumen", "Base limpia", "Eliminados", "Pendientes", "Revision placas", "Bloques"]
-        )
-        with tab1:
-            st.dataframe(export_tables["reporte_resumen"], use_container_width=True)
-        with tab2:
-            st.dataframe(export_tables["base_limpia"], use_container_width=True)
-        with tab3:
-            st.dataframe(export_tables["casos_eliminados"], use_container_width=True)
-        with tab4:
-            st.dataframe(export_tables["casos_pendientes"], use_container_width=True)
-        with tab5:
-            st.dataframe(export_tables["revision_placas"], use_container_width=True)
-        with tab6:
-            st.dataframe(export_tables["bloques_decision"], use_container_width=True)
-
-        if storage_backend.mode != "none" and can_view_history:
-            st.subheader("Historial guardado")
-            st.dataframe(storage_backend.list_recent_runs(20), use_container_width=True)
+    if processed_payload and processed_payload.get("input_signature") == current_signature:
+        render_processing_outputs(processed_payload, storage_backend, can_view_history)
+    elif processed_payload:
+        st.info("Hay resultados guardados de otra base u hoja. Procesa nuevamente para actualizar las descargas.")
 
 
 def main() -> None:
