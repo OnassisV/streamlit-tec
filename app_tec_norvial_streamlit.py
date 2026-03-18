@@ -2821,23 +2821,12 @@ def password_is_valid(password: str) -> bool:
 
 
 def render_bootstrap_admin(storage_backend) -> None:
-    intro_col, form_col = st.columns([1.15, 0.85], gap="large")
-    with intro_col:
+    _, center_col, _ = st.columns([1, 0.9, 1], gap="large")
+    with center_col:
         st.markdown(
-            build_hero_panel(
-                title="Alta inicial del administrador general",
-                copy="Configura la primera cuenta con acceso total para gobernar usuarios, configuraciones y vigencias del aplicativo.",
-                kicker="Primer acceso",
-                metrics=[
-                    ("Administrador general", "rol inicial"),
-                    ("Correo y celular", "datos obligatorios"),
-                    ("MySQL" if storage_backend.mode == "mysql" else storage_backend.mode.upper(), "persistencia"),
-                ],
-            ),
+            '<section class="auth-card"><div class="auth-card-kicker">Primer acceso</div><div class="auth-card-title">Crear administrador inicial</div><p class="auth-card-copy">Registra la primera cuenta con control total sobre usuarios, accesos e historial.</p></section>',
             unsafe_allow_html=True,
         )
-    with form_col:
-        st.markdown('<section class="auth-card"><div class="auth-card-kicker">Configurar acceso</div><div class="auth-card-title">Crear administrador inicial</div><p class="auth-card-copy">La primera vez debes registrar una cuenta con control total sobre usuarios, accesos e historial.</p></section>', unsafe_allow_html=True)
         with st.form("bootstrap_admin_form"):
             full_name = st.text_input("Nombre completo")
             username = st.text_input("Usuario")
@@ -2879,28 +2868,12 @@ def render_login_gate(storage_backend):
         render_bootstrap_admin(storage_backend)
         return None
 
-    intro_col, form_col = st.columns([1.15, 0.85], gap="large")
-    with intro_col:
+    _, center_col, _ = st.columns([1, 0.85, 1], gap="large")
+    with center_col:
         st.markdown(
-            build_hero_panel(
-                title="Acceso seguro a la suite operativa",
-                copy="Ingreso por usuario, rol y ventana de vigencia para administrar TEC y los modulos que iran creciendo dentro del aplicativo.",
-                kicker="Autenticacion",
-                metrics=[
-                    ("MySQL" if storage_backend.mode == "mysql" else storage_backend.mode.upper(), "persistencia"),
-                    (str(len(MODULE_CATALOG)), "modulos previstos"),
-                    ("PBKDF2", "proteccion de clave"),
-                ],
-            ),
+            '<section class="auth-card"><div class="auth-card-kicker">Ingreso</div><div class="auth-card-title">Iniciar sesion</div><p class="auth-card-copy">Ingresa tus credenciales para acceder al aplicativo.</p></section>',
             unsafe_allow_html=True,
         )
-        logo_image = load_contractor_logo()
-        if logo_image is not None:
-            st.markdown('<section class="brand-panel"><div class="auth-card-kicker">Empresa contratante</div><div class="brand-panel-copy">El acceso incorpora la identidad del contratante para mantener una entrada institucional y reconocible.</div></section>', unsafe_allow_html=True)
-            st.image(logo_image, use_container_width=True)
-
-    with form_col:
-        st.markdown('<section class="auth-card"><div class="auth-card-kicker">Ingreso</div><div class="auth-card-title">Iniciar sesion</div><p class="auth-card-copy">Usa tu cuenta habilitada para entrar a la portada operativa y a las herramientas autorizadas por tu rol.</p></section>', unsafe_allow_html=True)
         with st.form("login_form"):
             username = st.text_input("Usuario")
             password = st.text_input("Contrasena", type="password")
@@ -2979,7 +2952,34 @@ def render_user_management_page(storage_backend, current_user: dict) -> None:
         users_df = users_df[users_df["id"].notna()].copy()
 
     st.subheader("Usuarios actuales")
-    st.dataframe(users_df, use_container_width=True, hide_index=True)
+    available_users_df = users_df.copy()
+    if "is_enabled" in available_users_df.columns:
+        available_users_df["estado"] = available_users_df["is_enabled"].map({True: "Habilitado", False: "Deshabilitado"}).fillna("Sin dato")
+    for column_name in ["active_from", "active_until", "last_login_at", "created_at"]:
+        if column_name in available_users_df.columns:
+            available_users_df[column_name] = pd.to_datetime(available_users_df[column_name], errors="coerce").dt.strftime("%Y-%m-%d %H:%M")
+            available_users_df[column_name] = available_users_df[column_name].fillna("-")
+    visible_columns = [
+        column_name
+        for column_name in [
+            "username",
+            "full_name",
+            "role_name",
+            "estado",
+            "email",
+            "phone_number",
+            "active_from",
+            "active_until",
+            "last_login_at",
+        ]
+        if column_name in available_users_df.columns
+    ]
+    st.caption(f"Usuarios disponibles en la base de datos: {len(available_users_df)}")
+    st.dataframe(available_users_df[visible_columns], use_container_width=True, hide_index=True)
+    if "username" in available_users_df.columns:
+        usernames = ", ".join(str(username) for username in available_users_df["username"].dropna().tolist())
+        if usernames:
+            st.caption(f"Disponibles: {usernames}")
 
     if users_df.empty:
         st.info("Aun no hay usuarios registrados.")
