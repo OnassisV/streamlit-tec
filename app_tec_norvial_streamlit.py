@@ -3519,8 +3519,6 @@ def main() -> None:
         st.session_state[APP_NAV_KEY] = current_page
 
     with st.sidebar:
-        render_contractor_branding()
-        st.divider()
         if current_user:
             st.header("Sesion")
             st.write(current_user["full_name"])
