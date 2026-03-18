@@ -7,10 +7,12 @@ import re
 import unicodedata
 import zipfile
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.oxml.ns import qn
 from docx.shared import Inches
 from PIL import Image, ImageChops
 from streamlit.errors import StreamlitSecretNotFoundError
@@ -472,17 +474,18 @@ def inject_global_styles() -> None:
             }
 
             .hero-title {
-                font-size: 2.5rem;
-                line-height: 1.04;
+                font-size: clamp(2.5rem, 4vw, 4rem);
+                line-height: 1.08;
                 font-weight: 700;
                 margin: 0;
-                max-width: 12ch;
+                max-width: 18ch;
+                text-wrap: balance;
             }
 
             .hero-copy {
                 font-size: 1rem;
                 line-height: 1.7;
-                max-width: 62ch;
+                max-width: 72ch;
                 margin-top: 0.9rem;
                 color: rgba(245, 248, 255, 0.86);
             }
@@ -643,6 +646,8 @@ def inject_global_styles() -> None:
             @media (max-width: 900px) {
                 .hero-title {
                     font-size: 2rem;
+                    max-width: 11ch;
+                    text-wrap: pretty;
                 }
 
                 .hero-panel {
@@ -773,8 +778,9 @@ def render_home_page(current_user: dict | None) -> None:
         unsafe_allow_html=True,
     )
 
-    for start_index in range(0, len(MODULE_CATALOG), 3):
-        row_modules = MODULE_CATALOG[start_index : start_index + 3]
+    columns_per_row = 5 if len(MODULE_CATALOG) <= 5 else 4
+    for start_index in range(0, len(MODULE_CATALOG), columns_per_row):
+        row_modules = MODULE_CATALOG[start_index : start_index + columns_per_row]
         columns = st.columns(len(row_modules))
         for column, module in zip(columns, row_modules):
             with column:
@@ -2251,14 +2257,6 @@ def render_processing_outputs(processed_payload: dict[str, object], storage_back
         key="download_report_excel",
     )
     st.download_button(
-        "Descargar anexo Word de tablas",
-        data=processed_payload["report_docx_bytes"],
-        file_name=output_names["report_docx"],
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        use_container_width=True,
-        key="download_report_docx",
-    )
-    st.download_button(
         "Descargar Resultados Complementarios",
         data=processed_payload["complementary_excel_bytes"],
         file_name=output_names["extra_excel"],
@@ -2447,6 +2445,164 @@ def build_frequency_table_for_bucket(df_resultados: pd.DataFrame, bucket: str) -
     return tabla.reset_index().rename(columns={"COLA_ESPERA_USUARIOS": "Cantidad de usuarios en la cola"})
 
 
+def build_frequency_percentage_series(df_resultados: pd.DataFrame, buckets: list[str]) -> pd.DataFrame:
+    sub_df = df_resultados[df_resultados["PEAJE_BUCKET"].isin(buckets)].copy()
+    if sub_df.empty:
+        return pd.DataFrame(columns=["cola", "pct"])
+
+    serie = (
+        sub_df.groupby("COLA_ESPERA_USUARIOS", dropna=False)
+        .size()
+        .rename("total")
+        .reset_index()
+        .sort_values("COLA_ESPERA_USUARIOS")
+    )
+    total = int(serie["total"].sum())
+    if total <= 0:
+        return pd.DataFrame(columns=["cola", "pct"])
+
+    serie["pct"] = 100 * serie["total"] / total
+    serie["cola"] = serie["COLA_ESPERA_USUARIOS"].astype(int)
+    return serie[["cola", "pct"]]
+
+
+def render_frequency_chart_bytes(title: str, percentage_series: pd.DataFrame, accent: str) -> bytes | None:
+    if percentage_series.empty:
+        return None
+
+    fig, ax = plt.subplots(figsize=(8.2, 4.6), dpi=180)
+    ax.bar(
+        percentage_series["cola"].astype(str),
+        percentage_series["pct"],
+        color=accent,
+        edgecolor="#16315f",
+        linewidth=0.6,
+    )
+    ax.set_title(title, fontsize=12, fontweight="bold", color="#16315f", pad=14)
+    ax.set_xlabel("Cantidad de usuarios en cola", fontsize=9)
+    ax.set_ylabel("Frecuencia (%)", fontsize=9)
+    ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.35)
+    ax.set_axisbelow(True)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.tick_params(axis="x", labelsize=8)
+    ax.tick_params(axis="y", labelsize=8)
+
+    for idx, value in enumerate(percentage_series["pct"]):
+        ax.text(idx, value + 0.4, f"{value:.1f}%", ha="center", va="bottom", fontsize=7, color="#16315f")
+
+    fig.tight_layout()
+    output = BytesIO()
+    fig.savefig(output, format="png", bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    output.seek(0)
+    return output.getvalue()
+
+
+def build_report_date_range_text(df_resultados: pd.DataFrame) -> str:
+    fechas = pd.to_datetime(df_resultados.get("FECHA"), errors="coerce").dropna().sort_values().dt.normalize().unique()
+    if len(fechas) == 0:
+        return "Fuente: Base procesada en la aplicacion TEC."
+
+    meses = {
+        1: "enero", 2: "febrero", 3: "marzo", 4: "abril", 5: "mayo", 6: "junio",
+        7: "julio", 8: "agosto", 9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre",
+    }
+
+    def fmt(fecha):
+        return f"{fecha.day:02d} de {meses[fecha.month]} de {fecha.year}"
+
+    if len(fechas) == 1:
+        return f"Fuente: Labores de campo realizadas el {fmt(pd.Timestamp(fechas[0]))}"
+
+    return (
+        "Fuente: Labores de campo realizadas entre "
+        f"{fmt(pd.Timestamp(fechas[0]))} y {fmt(pd.Timestamp(fechas[-1]))}"
+    )
+
+
+def build_template_table3_text(informe_package: dict[str, object]) -> str:
+    tabla_tec_caseta = informe_package["tabla_tec_caseta"]
+    if tabla_tec_caseta.empty:
+        return (
+            "En la Tabla N° 3 no se identificaron resultados suficientes para resumir el Tiempo de Espera en Cola por caseta y sentido de circulacion."
+        )
+
+    fila = tabla_tec_caseta.sort_values("Tiempo de Espera en Cola - TEC", ascending=False).iloc[0]
+    return (
+        "En la Tabla N° 3, se presentan los resultados obtenidos a partir de los promedios de Tiempo de Espera en Cola "
+        "por vehiculo ponderado por el numero de vehiculos atendidos. Los resultados se presentan por caseta y sentido de circulacion, "
+        f"observandose el mayor promedio en {fila['Peaje']} - caseta {fila['Caseta Controlada']} - {fila['Sentido de Circulacion']}, "
+        f"con {float(fila['Tiempo de Espera en Cola - TEC']):.2f} minutos."
+    )
+
+
+def build_template_queue_text(informe_package: dict[str, object]) -> str:
+    tabla_cola = informe_package["tabla_cola_maxima"]
+    if tabla_cola.empty:
+        return (
+            "En la Tabla N° 5 se muestra la frecuencia de usuarios segun el tamano de cola por peaje y por casetas durante los periodos de evaluacion."
+        )
+
+    fila = tabla_cola.sort_values("Cola maxima real", ascending=False).iloc[0]
+    return (
+        "En la Tabla N° 5 se muestra la frecuencia de usuarios segun el tamano de cola por peaje y por casetas, durante los periodos de evaluacion. "
+        "La cola de espera real para cada caseta de peaje se presenta en las Tablas N° 5, 6, 7 y 8; "
+        f"destacando como mayor valor observado {int(fila['Cola maxima real'])} usuarios en {fila['Peaje']} - caseta {fila['Caseta Controlada']} - {fila['Sentido de Circulacion']}."
+    )
+
+
+def replace_result_section_sources(doc: Document, source_text: str) -> None:
+    for idx, paragraph in enumerate(doc.paragraphs):
+        if idx >= 105 and "Fuente:" in paragraph.text:
+            paragraph.text = source_text
+
+
+def replace_related_image(doc: Document, rel_id: str, image_bytes: bytes) -> None:
+    image_part = doc.part.related_parts[rel_id]
+    image_part._blob = image_bytes
+
+
+def update_result_section_graphs(doc: Document, informe_package: dict[str, object]) -> None:
+    df_resultados = informe_package.get("df_resultados")
+    if df_resultados is None or getattr(df_resultados, "empty", True):
+        return
+
+    chart_specs = {
+        139: {
+            "buckets": ["paraiso"],
+            "title": "Imagen N° 1. Frecuencias de cola en vehiculos observadas en la estacion de peaje Paraiso",
+            "accent": "#245cc6",
+        },
+        143: {
+            "buckets": ["serpentin", "serpentin_pesaje"],
+            "title": "Imagen N° 2. Frecuencias de cola en vehiculos observadas en la estacion de peaje y pesaje Serpentin",
+            "accent": "#1849a9",
+        },
+        147: {
+            "buckets": ["variante"],
+            "title": "Imagen N° 3. Frecuencias de cola en vehiculos observadas en la estacion de peaje Variante",
+            "accent": "#3b7be6",
+        },
+    }
+
+    for paragraph_idx, spec in chart_specs.items():
+        if paragraph_idx >= len(doc.paragraphs):
+            continue
+        paragraph = doc.paragraphs[paragraph_idx]
+        rel_ids = []
+        for blip in paragraph._p.xpath('.//a:blip'):
+            rel_id = blip.get(qn('r:embed'))
+            if rel_id:
+                rel_ids.append(rel_id)
+        if not rel_ids:
+            continue
+        series = build_frequency_percentage_series(df_resultados, spec["buckets"])
+        chart_bytes = render_frequency_chart_bytes(spec["title"], series, spec["accent"])
+        if chart_bytes is None:
+            continue
+        replace_related_image(doc, rel_ids[0], chart_bytes)
+
+
 def build_template_compliance_text(informe_package: dict[str, object]) -> str:
     tabla_tec_peaje = informe_package["tabla_tec_peaje"]
     if tabla_tec_peaje.empty:
@@ -2514,6 +2670,14 @@ def to_templated_docx_bytes(report_label: str, informe_package: dict[str, object
         if table_idx < len(doc.tables):
             write_dataframe_to_existing_docx_table(doc.tables[table_idx], tabla)
 
+    source_text = build_report_date_range_text(informe_package.get("df_resultados", pd.DataFrame()))
+    replace_result_section_sources(doc, source_text)
+
+    replace_docx_paragraph_contains(
+        doc,
+        "en la tabla n 3, se presenta los resultados obtenidos",
+        build_template_table3_text(informe_package),
+    )
     replace_docx_paragraph_contains(
         doc,
         "los resultados promedios por cada peaje/pesaje segun sentido",
@@ -2521,9 +2685,16 @@ def to_templated_docx_bytes(report_label: str, informe_package: dict[str, object
     )
     replace_docx_paragraph_contains(
         doc,
+        "en la tabla n 5 se muestra la frecuencia de usuarios",
+        build_template_queue_text(informe_package),
+    )
+    replace_docx_paragraph_contains(
+        doc,
         "de la tabla n 4 del presente informe",
         build_template_conclusion_text(informe_package),
     )
+
+    update_result_section_graphs(doc, informe_package)
 
     output = BytesIO()
     doc.save(output)
