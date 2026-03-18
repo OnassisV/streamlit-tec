@@ -2903,6 +2903,7 @@ def render_login_gate(storage_backend):
     if "id" in users_df.columns:
         users_df["id"] = pd.to_numeric(users_df["id"], errors="coerce")
         users_df = users_df[users_df["id"].notna()].copy()
+    user_options = users_df.to_dict("records")
 
     _, center_col, _ = st.columns([1, 0.85, 1], gap="large")
     with center_col:
@@ -2911,16 +2912,18 @@ def render_login_gate(storage_backend):
             unsafe_allow_html=True,
         )
         with st.form("login_form"):
-            username = st.text_input("Usuario")
+            selected_user = st.selectbox(
+                "Usuario",
+                options=user_options,
+                format_func=lambda row: f"{row['username']} | {row['full_name']} | {row['role_name']}",
+            )
             password = st.text_input("Contrasena", type="password")
             submitted = st.form_submit_button("Ingresar", use_container_width=True)
-        st.subheader("Usuarios disponibles")
-        st.dataframe(build_available_users_df(users_df), use_container_width=True, hide_index=True)
 
     if not submitted:
         return None
 
-    auth_result = storage_backend.authenticate_user(username, password)
+    auth_result = storage_backend.authenticate_user(selected_user["username"], password)
     if not auth_result.get("ok"):
         st.error(explain_auth_failure(auth_result.get("reason", "")))
         return None
