@@ -2152,16 +2152,16 @@ def derive_output_filenames(uploaded_name: str) -> dict[str, str]:
             "report_label": label,
             "clean_excel": f"{stem}_limpio.xlsx",
             "report_excel": f"Resultados {label}.xlsx",
-            "report_docx": f"Tablas {label} para informe.docx",
-            "report_docx_model": f"Informe {label} modelo 2022.docx",
+            "report_docx": f"Anexo tablas {label}.docx",
+            "report_docx_model": f"Informe final {label} modelo 2022.docx",
             "extra_excel": f"Resultados {label} complementarios.xlsx",
         }
     return {
         "report_label": stem,
         "clean_excel": f"{stem}_limpio.xlsx",
         "report_excel": f"{stem}_resultados.xlsx",
-        "report_docx": f"{stem}_tablas_informe.docx",
-        "report_docx_model": f"{stem}_informe_modelo_2022.docx",
+        "report_docx": f"{stem}_anexo_tablas.docx",
+        "report_docx_model": f"{stem}_informe_final_modelo_2022.docx",
         "extra_excel": f"{stem}_resultados_complementarios.xlsx",
     }
 
@@ -2223,6 +2223,17 @@ def render_processing_outputs(processed_payload: dict[str, object], storage_back
     c3.metric("Eliminados", metric_values.get("filas_eliminadas", 0))
     c4.metric("Pendientes", metric_values.get("filas_pendientes", 0))
 
+    st.caption("Descarga principal: usa 'Informe final modelo 2022'. El Word de tablas es solo un anexo auxiliar de trabajo.")
+
+    st.download_button(
+        "Descargar Informe final modelo 2022",
+        data=processed_payload["report_docx_model_bytes"],
+        file_name=output_names["report_docx_model"],
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        use_container_width=True,
+        key="download_model_docx",
+    )
+
     st.download_button(
         "Descargar Excel",
         data=processed_payload["excel_bytes"],
@@ -2240,20 +2251,12 @@ def render_processing_outputs(processed_payload: dict[str, object], storage_back
         key="download_report_excel",
     )
     st.download_button(
-        "Descargar Tablas Informe",
+        "Descargar anexo Word de tablas",
         data=processed_payload["report_docx_bytes"],
         file_name=output_names["report_docx"],
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         use_container_width=True,
         key="download_report_docx",
-    )
-    st.download_button(
-        "Descargar Informe Modelo 2022",
-        data=processed_payload["report_docx_model_bytes"],
-        file_name=output_names["report_docx_model"],
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        use_container_width=True,
-        key="download_model_docx",
     )
     st.download_button(
         "Descargar Resultados Complementarios",
