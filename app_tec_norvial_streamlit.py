@@ -296,6 +296,31 @@ def inject_global_styles() -> None:
                 color: #f4f8ff;
             }
 
+            [data-testid="stSidebar"] .stButton > button {
+                border-radius: 18px;
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                background: rgba(255, 255, 255, 0.08);
+                color: #f4f8ff;
+                box-shadow: none;
+            }
+
+            [data-testid="stSidebar"] .stButton > button:hover {
+                border-color: rgba(255, 255, 255, 0.3);
+                background: rgba(255, 255, 255, 0.16);
+                color: #ffffff;
+            }
+
+            [data-testid="stSidebar"] .stButton > button[kind="primary"] {
+                background: linear-gradient(135deg, #2a7de1 0%, #59b2ff 100%);
+                border-color: transparent;
+                color: #ffffff;
+            }
+
+            [data-testid="stSidebar"] .stButton > button[kind="secondary"] {
+                background: rgba(255, 255, 255, 0.1);
+                color: #f4f8ff;
+            }
+
             .hero-panel {
                 padding: 2rem 2.2rem;
                 border-radius: 28px;
@@ -3283,19 +3308,21 @@ def main() -> None:
         or user_has_permission("manage_user_activation", current_user)
     )
 
+    can_view_history = storage_backend.mode != "none" and (
+        not storage_backend.auth_enabled() or user_has_permission("view_history", current_user)
+    )
+
     page_options = ["Inicio"]
     if not storage_backend.auth_enabled() or user_has_permission("process_files", current_user):
         page_options.append("TEC")
     page_options.extend(["Relevamientos", "Auditorias", "Satisfaccion", "Flujogramas"])
-    if storage_backend.mode != "none" and (
-        not storage_backend.auth_enabled() or user_has_permission("view_history", current_user)
-    ):
-        page_options.append("Historial")
 
     current_page = st.session_state.get(APP_NAV_KEY, "Inicio")
     valid_pages = set(page_options)
     if can_open_user_management:
         valid_pages.add("Usuarios")
+    if can_view_history:
+        valid_pages.add("Historial")
     if current_page not in valid_pages:
         current_page = "Inicio"
         st.session_state[APP_NAV_KEY] = current_page
@@ -3307,32 +3334,39 @@ def main() -> None:
             st.caption(f"Usuario: {current_user['username']}")
             st.caption(f"Rol: {current_user['role_label']}")
             st.caption(describe_access_window(current_user.get("active_from"), current_user.get("active_until")))
-            action_cols = st.columns([5, 1]) if can_open_user_management else [st.container()]
+            action_specs = [("logout", "Cerrar sesion")]
+            if can_view_history:
+                action_specs.append(("history", "Historial"))
             if can_open_user_management:
-                with action_cols[0]:
-                    if st.button("Cerrar sesion", use_container_width=True):
-                        st.session_state[APP_NAV_KEY] = "Inicio"
-                        clear_authenticated_user()
-                        st.rerun()
-                with action_cols[1]:
-                    if st.button(
-                        "⚙",
-                        key="sidebar_users_button",
-                        help="Usuarios",
-                        use_container_width=True,
-                        type="primary" if current_page == "Usuarios" else "secondary",
-                    ):
-                        navigate_to("Usuarios")
-            else:
-                with action_cols[0]:
-                    if st.button("Cerrar sesion", use_container_width=True):
-                        st.session_state[APP_NAV_KEY] = "Inicio"
-                        clear_authenticated_user()
-                        st.rerun()
+                action_specs.append(("users", "⚙"))
+
+            action_cols = st.columns(len(action_specs))
+            for index, (action_key, action_label) in enumerate(action_specs):
+                with action_cols[index]:
+                    if action_key == "logout":
+                        if st.button("Cerrar sesion", key="sidebar_logout_button", use_container_width=True):
+                            st.session_state[APP_NAV_KEY] = "Inicio"
+                            clear_authenticated_user()
+                            st.rerun()
+                    elif action_key == "history":
+                        if st.button(
+                            "Historial",
+                            key="sidebar_history_button",
+                            use_container_width=True,
+                            type="primary" if current_page == "Historial" else "secondary",
+                        ):
+                            navigate_to("Historial")
+                    elif action_key == "users":
+                        if st.button(
+                            action_label,
+                            key="sidebar_users_button",
+                            help="Usuarios",
+                            use_container_width=True,
+                            type="primary" if current_page == "Usuarios" else "secondary",
+                        ):
+                            navigate_to("Usuarios")
             st.divider()
-        radio_page = current_page if current_page in page_options else "Inicio"
-        page = st.radio("Modulo", options=page_options, index=page_options.index(radio_page))
-        st.session_state[APP_NAV_KEY] = page
+        page = current_page
 
     if page == "Inicio":
         render_home_page(current_user)
