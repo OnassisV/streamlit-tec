@@ -723,6 +723,11 @@ def navigate_to(page: str) -> None:
     st.rerun()
 
 
+def render_back_to_home_button(page_key: str) -> None:
+    if st.button(f"← Volver a Inicio", key=f"back_{page_key}", use_container_width=False):
+        navigate_to("Inicio")
+
+
 def get_requested_page() -> str | None:
     raw_page = st.query_params.get("page")
     if raw_page is None:
@@ -773,6 +778,7 @@ def render_home_page(current_user: dict | None) -> None:
 
 
 def render_placeholder_module_page(page: str) -> None:
+    render_back_to_home_button(page)
     module = next((item for item in MODULE_CATALOG if item["page"] == page), None)
     placeholder = MODULE_PLACEHOLDERS[page]
     st.markdown(
@@ -799,8 +805,6 @@ def render_placeholder_module_page(page: str) -> None:
         ),
         unsafe_allow_html=True,
     )
-    if st.button("Volver al inicio", key=f"back_{page}", use_container_width=False):
-        navigate_to("Inicio")
 
 
 def suggest_column(columns: list[str], patterns: list[str]) -> str | None:
@@ -2929,6 +2933,7 @@ def render_login_gate(storage_backend):
 
 
 def render_history_page(storage_backend) -> None:
+    render_back_to_home_button("Historial")
     st.markdown(
         build_hero_panel(
             title="Historial de corridas",
@@ -2948,6 +2953,7 @@ def render_user_management_page(storage_backend, current_user: dict) -> None:
     can_manage_users = user_has_permission("manage_users", current_user)
     can_manage_activation = user_has_permission("manage_user_activation", current_user)
 
+    render_back_to_home_button("Usuarios")
     st.markdown(
         build_hero_panel(
             title="Gestion de usuarios",
@@ -3206,6 +3212,7 @@ def render_user_management_page(storage_backend, current_user: dict) -> None:
 
 
 def render_processing_page(storage_backend, current_user: dict | None) -> None:
+    render_back_to_home_button("TEC")
     st.markdown(
         build_hero_panel(
             title="Modulo TEC",
