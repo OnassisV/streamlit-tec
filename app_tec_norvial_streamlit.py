@@ -478,8 +478,9 @@ def inject_global_styles() -> None:
                 line-height: 1.08;
                 font-weight: 700;
                 margin: 0;
-                max-width: 18ch;
-                text-wrap: balance;
+                max-width: none;
+                width: min(100%, 28ch);
+                text-wrap: pretty;
             }
 
             .hero-copy {
@@ -646,7 +647,7 @@ def inject_global_styles() -> None:
             @media (max-width: 900px) {
                 .hero-title {
                     font-size: 2rem;
-                    max-width: 11ch;
+                    width: min(100%, 11ch);
                     text-wrap: pretty;
                 }
 
@@ -778,7 +779,7 @@ def render_home_page(current_user: dict | None) -> None:
         unsafe_allow_html=True,
     )
 
-    columns_per_row = 5 if len(MODULE_CATALOG) <= 5 else 4
+    columns_per_row = 3
     for start_index in range(0, len(MODULE_CATALOG), columns_per_row):
         row_modules = MODULE_CATALOG[start_index : start_index + columns_per_row]
         columns = st.columns(len(row_modules))
