@@ -2446,6 +2446,137 @@ def build_frequency_table_for_bucket(df_resultados: pd.DataFrame, bucket: str) -
     return tabla.reset_index().rename(columns={"COLA_ESPERA_USUARIOS": "Cantidad de usuarios en la cola"})
 
 
+def format_template_peaje_name(bucket: str) -> str:
+    names = {
+        "serpentin": "Serpentin de Pasamayo",
+        "variante": "Variante de Pasamayo",
+        "paraiso": "Paraiso (Huacho)",
+        "serpentin_pesaje": "Serpentin de Pasamayo (Pesaje)",
+    }
+    return names.get(bucket, bucket.upper())
+
+
+def format_template_sentido_name(value: object) -> str:
+    key = normalize_text_key(value)
+    if "asc" in key:
+        return "Ascendente"
+    if "desc" in key:
+        return "Descendente"
+    return str(value).title() if value is not None else ""
+
+
+def format_template_date(value: pd.Timestamp) -> str:
+    return value.strftime("%d.%m.%Y")
+
+
+def format_template_day_name(value: pd.Timestamp) -> str:
+    dias = {
+        0: "Lunes",
+        1: "Martes",
+        2: "Miercoles",
+        3: "Jueves",
+        4: "Viernes",
+        5: "Sabado",
+        6: "Domingo",
+    }
+    return dias[value.weekday()]
+
+
+def format_template_timerange(start_value: pd.Timedelta, end_value: pd.Timedelta) -> str:
+    if pd.isna(start_value) or pd.isna(end_value):
+        return ""
+
+    def fmt(td: pd.Timedelta) -> str:
+        total_seconds = int(td.total_seconds()) % (24 * 3600)
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        return f"{hours:02d}:{minutes:02d}"
+
+    return f"{fmt(start_value)} a {fmt(end_value)}"
+
+
+def blank_repeated_first_column(tabla: pd.DataFrame, column_name: str) -> pd.DataFrame:
+    tabla = tabla.copy()
+    previous = None
+    values = []
+    for value in tabla[column_name]:
+        if previous == value:
+            values.append("")
+        else:
+            values.append(value)
+            previous = value
+    tabla[column_name] = values
+    return tabla
+
+
+def build_medicion_programada_table(df_resultados: pd.DataFrame) -> pd.DataFrame:
+    columnas = ["Peaje", "Fecha", "Dia", "Rango Horario", "Sentido"]
+    if df_resultados.empty:
+        return pd.DataFrame(columns=columnas)
+
+    base = df_resultados.copy()
+    if "LLEGADA_COLA_FINAL_TD" not in base.columns:
+        base["LLEGADA_COLA_FINAL_TD"] = pd.to_timedelta(base["LLEGADA_COLA_FINAL"].astype(str), errors="coerce")
+    if "SALIDA_CASETA_FINAL_TD" not in base.columns:
+        base["SALIDA_CASETA_FINAL_TD"] = pd.to_timedelta(base["SALIDA_CASETA_FINAL"].astype(str), errors="coerce")
+    base["FECHA_DT"] = pd.to_datetime(base["FECHA"], errors="coerce")
+
+    tabla = (
+        base.groupby(["PEAJE_BUCKET", "FECHA_DT", "SENTIDO"], dropna=False)
+        .agg(hora_inicio=("LLEGADA_COLA_FINAL_TD", "min"), hora_fin=("SALIDA_CASETA_FINAL_TD", "max"))
+        .reset_index()
+    )
+    tabla = tabla[tabla["FECHA_DT"].notna()].copy()
+    if tabla.empty:
+        return pd.DataFrame(columns=columnas)
+
+    bucket_order = {"serpentin": 0, "variante": 1, "paraiso": 2, "serpentin_pesaje": 3}
+    tabla["_bucket_order"] = tabla["PEAJE_BUCKET"].map(lambda value: bucket_order.get(value, 99))
+    tabla["_sentido_order"] = tabla["SENTIDO"].map(lambda value: 0 if "desc" in normalize_text_key(value) else 1)
+    tabla = tabla.sort_values(["_bucket_order", "FECHA_DT", "_sentido_order"], ascending=[True, False, True])
+
+    tabla_out = pd.DataFrame(
+        {
+            "Peaje": tabla["PEAJE_BUCKET"].map(format_template_peaje_name),
+            "Fecha": tabla["FECHA_DT"].map(format_template_date),
+            "Dia": tabla["FECHA_DT"].map(format_template_day_name),
+            "Rango Horario": [format_template_timerange(start, end) for start, end in zip(tabla["hora_inicio"], tabla["hora_fin"])],
+            "Sentido": tabla["SENTIDO"].map(format_template_sentido_name),
+        }
+    )
+    return blank_repeated_first_column(tabla_out, "Peaje")
+
+
+def build_personal_asignado_table(df_resultados: pd.DataFrame) -> pd.DataFrame:
+    columnas = ["Peaje", "Cantidad de Casetas", "Supervisores", "Aforadores", "Sentido"]
+    if df_resultados.empty:
+        return pd.DataFrame(columns=columnas)
+
+    tabla = (
+        df_resultados.groupby(["PEAJE_BUCKET", "SENTIDO"], dropna=False)
+        .agg(casetas=("CASETA", pd.Series.nunique))
+        .reset_index()
+    )
+    if tabla.empty:
+        return pd.DataFrame(columns=columnas)
+
+    bucket_order = {"serpentin": 0, "variante": 1, "paraiso": 2, "serpentin_pesaje": 3}
+    tabla["_bucket_order"] = tabla["PEAJE_BUCKET"].map(lambda value: bucket_order.get(value, 99))
+    tabla["_sentido_order"] = tabla["SENTIDO"].map(lambda value: 1 if "desc" in normalize_text_key(value) else 0)
+    tabla = tabla.sort_values(["_bucket_order", "_sentido_order"])
+
+    tabla_out = pd.DataFrame(
+        {
+            "Peaje": tabla["PEAJE_BUCKET"].map(format_template_peaje_name),
+            "Cantidad de Casetas": tabla["casetas"].astype(int).astype(str),
+            "Supervisores": "1",
+            "Aforadores": (tabla["casetas"].astype(int) * 2).astype(str),
+            "Sentido": tabla["SENTIDO"].map(format_template_sentido_name),
+        }
+    )
+    return blank_repeated_first_column(tabla_out, "Peaje")
+
+
 def build_frequency_percentage_series(df_resultados: pd.DataFrame, buckets: list[str]) -> pd.DataFrame:
     sub_df = df_resultados[df_resultados["PEAJE_BUCKET"].isin(buckets)].copy()
     if sub_df.empty:
@@ -2659,6 +2790,8 @@ def to_templated_docx_bytes(report_label: str, informe_package: dict[str, object
 
     doc = Document(template_path)
     table_mapping = {
+        0: informe_package["tabla_programacion"],
+        1: informe_package["tabla_personal"],
         3: informe_package["tabla_tec_caseta"],
         4: informe_package["tabla_tec_peaje"],
         5: informe_package["tabla_frecuencia_paraiso"],
@@ -2694,8 +2827,6 @@ def to_templated_docx_bytes(report_label: str, informe_package: dict[str, object
         "de la tabla n 4 del presente informe",
         build_template_conclusion_text(informe_package),
     )
-
-    update_result_section_graphs(doc, informe_package)
 
     output = BytesIO()
     doc.save(output)
@@ -2756,6 +2887,9 @@ def build_resultados_dataframe(df_export_base: pd.DataFrame) -> pd.DataFrame:
 def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
     df_resultados = build_resultados_dataframe(df_export_base)
 
+    tabla_programacion_informe = pd.DataFrame(columns=["Peaje", "Fecha", "Dia", "Rango Horario", "Sentido"])
+    tabla_personal_informe = pd.DataFrame(columns=["Peaje", "Cantidad de Casetas", "Supervisores", "Aforadores", "Sentido"])
+
     tabla_tec_caseta_informe = pd.DataFrame(
         columns=["Peaje", "Caseta Controlada", "Sentido de Circulacion", "Tiempo de Espera en Cola - TEC", "Unidades de tiempo"]
     )
@@ -2774,6 +2908,8 @@ def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
     if not df_resultados.empty:
         df_resultados = df_resultados.copy()
         df_resultados["PEAJE_BUCKET"] = df_resultados["PEAJE"].map(classify_peaje_bucket)
+        tabla_programacion_informe = build_medicion_programada_table(df_resultados)
+        tabla_personal_informe = build_personal_asignado_table(df_resultados)
 
         tabla_tec_caseta = (
             df_resultados.groupby(["PEAJE", "CASETA", "SENTIDO"], dropna=False)
@@ -2874,6 +3010,8 @@ def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
         )
 
     excel_sheets = {
+        "programacion_medicion": tabla_programacion_informe,
+        "personal_asignado": tabla_personal_informe,
         "tec_caseta": tabla_tec_caseta_informe,
         "tec_peaje_sentido": tabla_tec_peaje_informe,
         "cola_maxima_real": tabla_cola_maxima_informe,
@@ -2886,6 +3024,8 @@ def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
     return {
         "df_resultados": df_resultados,
         "excel_sheets": excel_sheets,
+        "tabla_programacion": tabla_programacion_informe,
+        "tabla_personal": tabla_personal_informe,
         "tabla_tec_caseta": tabla_tec_caseta_informe,
         "tabla_tec_peaje": tabla_tec_peaje_informe,
         "tabla_cola_maxima": tabla_cola_maxima_informe,
