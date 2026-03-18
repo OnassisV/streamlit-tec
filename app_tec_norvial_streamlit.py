@@ -706,12 +706,7 @@ def render_contractor_branding() -> None:
     if logo_image is None:
         return
 
-    st.markdown('<div class="sidebar-brand-wrap"><div class="sidebar-brand-kicker">Empresa contratante</div></div>', unsafe_allow_html=True)
     st.image(logo_image, use_container_width=True)
-    st.markdown(
-        '<div class="sidebar-brand-note">Identidad visual del contratante integrada en el acceso y en la portada del aplicativo.</div>',
-        unsafe_allow_html=True,
-    )
 
 
 def navigate_to(page: str) -> None:
@@ -3535,6 +3530,8 @@ def main() -> None:
 
     with st.sidebar:
         if current_user:
+            render_contractor_branding()
+            st.divider()
             st.header("Sesion")
             st.write(current_user["full_name"])
             st.caption(f"Usuario: {current_user['username']}")
