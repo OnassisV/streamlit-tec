@@ -2668,6 +2668,7 @@ def render_bootstrap_admin(storage_backend) -> None:
 
     if auth_result.get("ok"):
         set_authenticated_user(auth_result["user"])
+        st.session_state[APP_NAV_KEY] = "Inicio"
         st.rerun()
 
 
@@ -2705,6 +2706,7 @@ def render_login_gate(storage_backend):
         return None
 
     set_authenticated_user(auth_result["user"])
+    st.session_state[APP_NAV_KEY] = "Inicio"
     st.rerun()
     return None
 
@@ -2761,7 +2763,11 @@ def render_user_management_page(storage_backend, current_user: dict) -> None:
     )
     st.dataframe(roles_info, use_container_width=True, hide_index=True)
 
-    users_df = storage_backend.list_users()
+    users_df = storage_backend.list_users().copy()
+    if "id" in users_df.columns:
+        users_df["id"] = pd.to_numeric(users_df["id"], errors="coerce")
+        users_df = users_df[users_df["id"].notna()].copy()
+
     st.subheader("Usuarios actuales")
     st.dataframe(users_df, use_container_width=True, hide_index=True)
 
@@ -2775,7 +2781,9 @@ def render_user_management_page(storage_backend, current_user: dict) -> None:
     }
     selected_user_label = st.selectbox("Usuario a editar", options=list(user_options.keys()))
     selected_user = user_options[selected_user_label]
-    selected_is_self = int(selected_user["id"]) == int(current_user["id"])
+    current_user_id = pd.to_numeric(pd.Series([current_user.get("id")]), errors="coerce").iloc[0]
+    selected_user_id = int(selected_user["id"])
+    selected_is_self = pd.notna(current_user_id) and selected_user_id == int(current_user_id)
 
     current_active_from = date_value_or_none(selected_user.get("active_from"))
     current_active_until = date_value_or_none(selected_user.get("active_until"))
@@ -2892,7 +2900,7 @@ def render_user_management_page(storage_backend, current_user: dict) -> None:
             return
 
         try:
-            storage_backend.update_user(int(selected_user["id"]), payload)
+            storage_backend.update_user(selected_user_id, payload)
         except Exception as exc:
             st.error(f"No pude actualizar el usuario: {exc}")
             return
@@ -3270,22 +3278,25 @@ def main() -> None:
     else:
         current_user = None
 
+    can_open_user_management = storage_backend.auth_enabled() and (
+        user_has_permission("manage_users", current_user)
+        or user_has_permission("manage_user_activation", current_user)
+    )
+
     page_options = ["Inicio"]
     if not storage_backend.auth_enabled() or user_has_permission("process_files", current_user):
         page_options.append("TEC")
     page_options.extend(["Relevamientos", "Auditorias", "Satisfaccion", "Flujogramas"])
-    if storage_backend.auth_enabled() and (
-        user_has_permission("manage_users", current_user)
-        or user_has_permission("manage_user_activation", current_user)
-    ):
-        page_options.append("Usuarios")
     if storage_backend.mode != "none" and (
         not storage_backend.auth_enabled() or user_has_permission("view_history", current_user)
     ):
         page_options.append("Historial")
 
     current_page = st.session_state.get(APP_NAV_KEY, "Inicio")
-    if current_page not in page_options:
+    valid_pages = set(page_options)
+    if can_open_user_management:
+        valid_pages.add("Usuarios")
+    if current_page not in valid_pages:
         current_page = "Inicio"
         st.session_state[APP_NAV_KEY] = current_page
 
@@ -3296,11 +3307,31 @@ def main() -> None:
             st.caption(f"Usuario: {current_user['username']}")
             st.caption(f"Rol: {current_user['role_label']}")
             st.caption(describe_access_window(current_user.get("active_from"), current_user.get("active_until")))
-            if st.button("Cerrar sesion", use_container_width=True):
-                clear_authenticated_user()
-                st.rerun()
+            action_cols = st.columns([5, 1]) if can_open_user_management else [st.container()]
+            if can_open_user_management:
+                with action_cols[0]:
+                    if st.button("Cerrar sesion", use_container_width=True):
+                        st.session_state[APP_NAV_KEY] = "Inicio"
+                        clear_authenticated_user()
+                        st.rerun()
+                with action_cols[1]:
+                    if st.button(
+                        "⚙",
+                        key="sidebar_users_button",
+                        help="Usuarios",
+                        use_container_width=True,
+                        type="primary" if current_page == "Usuarios" else "secondary",
+                    ):
+                        navigate_to("Usuarios")
+            else:
+                with action_cols[0]:
+                    if st.button("Cerrar sesion", use_container_width=True):
+                        st.session_state[APP_NAV_KEY] = "Inicio"
+                        clear_authenticated_user()
+                        st.rerun()
             st.divider()
-        page = st.radio("Modulo", options=page_options, index=page_options.index(current_page))
+        radio_page = current_page if current_page in page_options else "Inicio"
+        page = st.radio("Modulo", options=page_options, index=page_options.index(radio_page))
         st.session_state[APP_NAV_KEY] = page
 
     if page == "Inicio":

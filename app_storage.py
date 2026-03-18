@@ -240,6 +240,17 @@ class MySQLStorageBackend(StorageBackend):
                 connection_kwargs["ssl_verify_identity"] = self.ssl_verify_identity
         return pymysql.connect(**connection_kwargs)
 
+    def _query_dataframe(self, query: str, params=None, columns: list[str] | None = None) -> pd.DataFrame:
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query, params or ())
+                rows = cursor.fetchall()
+
+        if not rows:
+            return pd.DataFrame(columns=columns)
+
+        return pd.DataFrame(rows, columns=columns)
+
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
             with conn.cursor() as cursor:
@@ -410,8 +421,18 @@ class MySQLStorageBackend(StorageBackend):
             ORDER BY id DESC
             LIMIT %s
         """
-        with self._connect() as conn:
-            df = pd.read_sql_query(query, conn, params=(limit,))
+        df = self._query_dataframe(
+            query,
+            params=(limit,),
+            columns=[
+                "processed_at",
+                "source_name",
+                "input_rows",
+                "clean_rows",
+                "deleted_rows",
+                "pending_rows",
+            ],
+        )
         df["storage_mode"] = self.mode
         return df
 
@@ -516,8 +537,23 @@ class MySQLStorageBackend(StorageBackend):
             INNER JOIN app_roles r ON r.role_key = u.role_key
             ORDER BY u.username ASC
         """
-        with self._connect() as conn:
-            return pd.read_sql_query(query, conn)
+        return self._query_dataframe(
+            query,
+            columns=[
+                "id",
+                "username",
+                "full_name",
+                "email",
+                "phone_number",
+                "role_key",
+                "role_name",
+                "is_enabled",
+                "active_from",
+                "active_until",
+                "last_login_at",
+                "created_at",
+            ],
+        )
 
     def create_user(self, payload: dict) -> None:
         username = normalize_username(payload.get("username") or "")
