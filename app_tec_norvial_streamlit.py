@@ -170,8 +170,10 @@ ACCIONES_PLACA_VALIDAS = {
     "corregir_a_sugerida",
     "corregir_a_coincidencia_lista",
     "corregir_a_recorte_sufijo_x",
+    "consolidar_duplicado_cercano",
     "corregir_manual",
     "excluir_analisis_placa",
+    "excluir_duplicado_cercano",
     "mantener_observada",
     "sin_cambio",
 }
@@ -181,8 +183,10 @@ ACCIONES_PLACA_AJUSTE = {
     "corregir_a_sugerida",
     "corregir_a_coincidencia_lista",
     "corregir_a_recorte_sufijo_x",
+    "consolidar_duplicado_cercano",
     "corregir_manual",
 }
+DEDUPLICACION_DUPLICADO_CERCANO_SEGUNDOS = 300
 DEFAULT_MANUAL_RULES = [
     {
         "activo": True,
@@ -303,6 +307,7 @@ DEFAULT_CONFIG = {
     "aplicar_recorte_sufijo_x": True,
     "aplicar_exclusion_placeholders": True,
     "aplicar_reglas_manuales": True,
+    "aplicar_consolidacion_duplicados_cercanos": True,
     "eliminar_bordes_caseta": True,
     "aplicar_interpolacion": True,
     "aplicar_mediana_local": True,
@@ -1105,6 +1110,122 @@ def combine_action(placa_action: str, tiempo_action: str) -> str:
     return "sin_cambio" if not partes else " | ".join(partes)
 
 
+def append_note(existing_note, new_note: str) -> str:
+    if not new_note:
+        return existing_note
+    if pd.isna(existing_note) or not str(existing_note).strip():
+        return new_note
+    existing_text = str(existing_note).strip()
+    if new_note in existing_text:
+        return existing_text
+    return f"{existing_text} | {new_note}"
+
+
+def build_duplicate_reference_time(df: pd.DataFrame) -> pd.Series:
+    t1 = df["LLEGADA COLA"].map(normalizar_hora)
+    t2 = df["LLEGADA CASETA"].map(normalizar_hora)
+    t3 = df["SALIDA CASETA"].map(normalizar_hora)
+    return t2.combine_first(t1).combine_first(t3)
+
+
+def consolidate_near_duplicate_plate_rows(df_in: pd.DataFrame, window_seconds: int) -> pd.DataFrame:
+    df = df_in.copy()
+    if df.empty:
+        return df
+
+    df["_DEDUP_FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce").dt.normalize()
+    df["_DEDUP_REF"] = build_duplicate_reference_time(df)
+    df["_DEDUP_T1"] = df["LLEGADA COLA"].map(normalizar_hora)
+    df["_DEDUP_T2"] = df["LLEGADA CASETA"].map(normalizar_hora)
+    df["_DEDUP_T3"] = df["SALIDA CASETA"].map(normalizar_hora)
+    df["_DEDUP_COMPLETITUD"] = df[["_DEDUP_T1", "_DEDUP_T2", "_DEDUP_T3"]].notna().sum(axis=1)
+
+    group_cols = ["PEAJE", "SENTIDO", "_DEDUP_FECHA", "PLACA_FINAL_DECIDIDA"]
+    valid_mask = (
+        df["PLACA_EXCLUIR_ANALISIS"].eq(False)
+        & df["PLACA_FINAL_DECIDIDA"].notna()
+        & df["_DEDUP_FECHA"].notna()
+        & df["_DEDUP_REF"].notna()
+    )
+    if not valid_mask.any():
+        return df.drop(columns=[col for col in df.columns if col.startswith("_DEDUP_")])
+
+    for _, sub_df in df[valid_mask].sort_values(group_cols + ["_DEDUP_REF", "_ORDEN_FILA"]).groupby(group_cols, dropna=False):
+        if len(sub_df) < 2:
+            continue
+
+        clusters: list[list[int]] = []
+        current_cluster: list[int] = []
+        previous_ref = None
+        for row_idx, row in sub_df.iterrows():
+            current_ref = row["_DEDUP_REF"]
+            if not current_cluster:
+                current_cluster = [row_idx]
+            elif previous_ref is not None and (current_ref - previous_ref).total_seconds() <= window_seconds:
+                current_cluster.append(row_idx)
+            else:
+                if len(current_cluster) > 1:
+                    clusters.append(current_cluster)
+                current_cluster = [row_idx]
+            previous_ref = current_ref
+        if len(current_cluster) > 1:
+            clusters.append(current_cluster)
+
+        for cluster in clusters:
+            cluster_df = df.loc[cluster].copy()
+            cluster_df = cluster_df.sort_values(
+                ["_DEDUP_COMPLETITUD", "_DEDUP_T2", "_DEDUP_T3", "_DEDUP_T1", "_ORDEN_FILA"],
+                ascending=[False, False, False, False, True],
+                na_position="last",
+            )
+            canonical_idx = cluster_df.index[0]
+            source_indices = [idx for idx in cluster_df.index if idx != canonical_idx]
+            if not source_indices:
+                continue
+
+            source_rows = df.loc[source_indices].copy()
+            source_casetas = ", ".join(sorted(source_rows["CASETA"].astype(str).unique()))
+            source_ordenes = ", ".join(str(int(value)) for value in source_rows["_ORDEN_FILA"].tolist())
+
+            for source_idx in source_indices:
+                for source_col, target_col in [
+                    ("LLEGADA COLA", "_DEDUP_T1"),
+                    ("LLEGADA CASETA", "_DEDUP_T2"),
+                    ("SALIDA CASETA", "_DEDUP_T3"),
+                    ("T. TEC", None),
+                    ("T. CASETA", None),
+                ]:
+                    if pd.isna(df.at[canonical_idx, source_col]) and pd.notna(df.at[source_idx, source_col]):
+                        df.at[canonical_idx, source_col] = df.at[source_idx, source_col]
+                        if target_col:
+                            df.at[canonical_idx, target_col] = df.at[source_idx, target_col]
+
+            canonical_note = (
+                "Consolidacion de duplicado cercano: misma placa final, mismo peaje/sentido/fecha, "
+                f"fusionado con filas {_safe_text(source_ordenes)} y casetas {_safe_text(source_casetas)}."
+            )
+            df.at[canonical_idx, "PLACA_AJUSTE_MANUAL"] = append_note(df.at[canonical_idx, "PLACA_AJUSTE_MANUAL"], canonical_note)
+            if str(df.at[canonical_idx, "PLACA_ACCION_FINAL"]) == "sin_cambio":
+                df.at[canonical_idx, "PLACA_ACCION_FINAL"] = "consolidar_duplicado_cercano"
+
+            for source_idx in source_indices:
+                source_note = (
+                    "Registro consolidado en duplicado cercano con la misma placa final; "
+                    f"fila canonica {_safe_text(int(df.at[canonical_idx, '_ORDEN_FILA']))}, caseta canonica {_safe_text(df.at[canonical_idx, 'CASETA'])}."
+                )
+                df.at[source_idx, "PLACA_ACCION_FINAL"] = "excluir_duplicado_cercano"
+                df.at[source_idx, "PLACA_EXCLUIR_ANALISIS"] = True
+                df.at[source_idx, "PLACA_AJUSTE_MANUAL"] = append_note(df.at[source_idx, "PLACA_AJUSTE_MANUAL"], source_note)
+
+    return df.drop(columns=[col for col in df.columns if col.startswith("_DEDUP_")], errors="ignore")
+
+
+def _safe_text(value) -> str:
+    if pd.isna(value):
+        return "s/d"
+    return str(value)
+
+
 def limpiar_placas_peaje(sub_df: pd.DataFrame) -> pd.DataFrame:
     result = sub_df.copy()
     original = result["PLACA"].fillna("").astype(str)
@@ -1496,6 +1617,9 @@ def run_plate_cleaning(
 
     if config["aplicar_reglas_manuales"]:
         df = apply_manual_rules_to_df(df, manual_rules_df)
+
+    if config.get("aplicar_consolidacion_duplicados_cercanos", False):
+        df = consolidate_near_duplicate_plate_rows(df, DEDUPLICACION_DUPLICADO_CERCANO_SEGUNDOS)
 
     df_eliminados = df[df["PLACA_EXCLUIR_ANALISIS"]].copy()
     df_trabajo = df[~df["PLACA_EXCLUIR_ANALISIS"]].copy()

@@ -144,6 +144,39 @@ def build_via_compare(official_df: pd.DataFrame, tech_df: pd.DataFrame, label: s
     return comp.sort_values("VIA_TXT")
 
 
+def build_operating_windows(tech_df: pd.DataFrame) -> pd.DataFrame:
+    windows = (
+        tech_df.dropna(subset=["DATETIME_CASETA"])
+        .groupby(["CASETA_TXT", "SENTIDO_N"], dropna=False)
+        .agg(
+            inicio_ventana=("DATETIME_CASETA", "min"),
+            fin_ventana=("DATETIME_CASETA", "max"),
+            vehiculos_tec=("PLACA_N", "size"),
+        )
+        .reset_index()
+        .sort_values(["CASETA_TXT", "SENTIDO_N"])
+    )
+    return windows
+
+
+def filter_to_operating_windows(source_df: pd.DataFrame, windows_df: pd.DataFrame, caseta_col: str) -> pd.DataFrame:
+    if source_df.empty or windows_df.empty:
+        return source_df.iloc[0:0].copy()
+
+    merged = source_df.merge(
+        windows_df,
+        left_on=[caseta_col, "SENTIDO_N"],
+        right_on=["CASETA_TXT", "SENTIDO_N"],
+        how="inner",
+        suffixes=("", "_VENTANA"),
+    )
+    filtered = merged[
+        merged["DATETIME_CASETA"].between(merged["inicio_ventana"], merged["fin_ventana"], inclusive="both")
+    ].copy()
+    drop_cols = ["CASETA_TXT_VENTANA"] if "CASETA_TXT_VENTANA" in filtered.columns else []
+    return filtered.drop(columns=drop_cols, errors="ignore")
+
+
 def summarize_time_metrics(df_resultados: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
     grouped = (
         df_resultados.groupby(group_cols, dropna=False)
@@ -195,14 +228,14 @@ def build_findings(summary_df: pd.DataFrame, hourly_tables: dict[str, pd.DataFra
         worst_direction = sentido.sort_values("brecha_abs").iloc[0]
         findings.append(
             (
-                f"{row['peaje']} {row['fecha']}: la base limpia cubre {row['cobertura_limpia_pct']:.1f}% del aforo oficial, "
-                f"mientras que la coincidencia por placa y hora de llegada a caseta en ventana de ±60 s alcanza {row['match_60s_pct']:.1f}%."
+                f"{row['peaje']} {row['fecha']}: usando la ventana real de operacion observada en TEC por caseta y sentido, "
+                f"la base limpia cubre {row['cobertura_limpia_pct']:.1f}% del aforo oficial filtrado y la coincidencia por placa y hora de llegada a caseta en ventana de ±60 s alcanza {row['match_60s_pct']:.1f}%."
             )
         )
         findings.append(
             (
-                f"El bloque horario mas critico en {row['peaje']} ocurre a las {worst_hour['hora'][-5:]}, con brecha de {int(worst_hour['brecha_abs'])} vehiculos "
-                f"y cobertura de {worst_hour['cobertura_pct']:.1f}% frente al oficial."
+                f"El bloque horario mas critico en {row['peaje']} dentro de las ventanas activas ocurre a las {worst_hour['hora'][-5:]}, "
+                f"con brecha de {int(worst_hour['brecha_abs'])} vehiculos y cobertura de {worst_hour['cobertura_pct']:.1f}% frente al oficial filtrado."
             )
         )
         findings.append(
@@ -304,8 +337,32 @@ def build_word_report(summary_df: pd.DataFrame, findings: list[str], hourly_tabl
 
     doc.add_paragraph(
         "Este informe compara la base limpia reconstruida con la pipeline vigente del aplicativo contra los archivos oficiales del peaje, "
-        "utilizando como ancla principal la fecha y la hora de llegada a caseta. Se incluyen contrastes por volumen total, coincidencia de placa-tiempo, "
-        "brechas por hora, brechas por sentido y resumen operativo de tiempos TEC.",
+        "recortando primero la data oficial y la base cruda a la ventana real de atencion observada en TEC para cada caseta, sentido y fecha. "
+        "De ese modo, la comparacion parte del primer registro TEC en llegada a caseta y termina en el ultimo registro TEC de la misma caseta y sentido. "
+        "Se incluyen contrastes por volumen total, coincidencia de placa-tiempo, brechas por hora, brechas por sentido y resumen operativo de tiempos TEC.",
+    )
+
+    doc.add_paragraph("Criterio de comparacion", style="Heading 1")
+    doc.add_paragraph(
+        "La comparacion no se realiza por bloque horario calendario completo. En su lugar, para cada peaje, caseta, sentido y fecha, "
+        "se identifica la ventana real de atencion observada en la base TEC usando la hora de llegada a caseta."
+    )
+    doc.add_paragraph(
+        "El inicio de la ventana corresponde al primer registro TEC de llegada a caseta y el fin corresponde al ultimo registro TEC de llegada a caseta "
+        "para esa misma combinacion operativa.",
+        style="List Bullet",
+    )
+    doc.add_paragraph(
+        "Una vez definida esa ventana, la data oficial del peaje y la base cruda se filtran para conservar unicamente los registros que caen dentro de ese mismo tramo temporal.",
+        style="List Bullet",
+    )
+    doc.add_paragraph(
+        "Por tanto, si una caseta TEC inicia su atencion a las 17:43, la comparacion oficial para esa caseta no empieza a las 17:00, sino desde la primera observacion oficial disponible dentro de la ventana 17:43 en adelante.",
+        style="List Bullet",
+    )
+    doc.add_paragraph(
+        "Este criterio evita sobreestimar las brechas por comparar periodos donde el aforo oficial ya estaba registrando vehiculos pero la caseta aun no habia iniciado atencion en la base TEC.",
+        style="List Bullet",
     )
 
     doc.add_paragraph("Hallazgos ejecutivos", style="Heading 1")
@@ -445,7 +502,7 @@ def build_excel_report(summary_df: pd.DataFrame, findings: list[str], time_table
             ws_portada,
             portada,
             "Informe de contraste base limpia vs peaje",
-            "La base limpia se reconstruyo con la pipeline vigente y se comparo contra el aforo oficial usando fecha + llegada a caseta.",
+            "La base limpia se reconstruyo con la pipeline vigente y se comparo contra el aforo oficial filtrado por la ventana real de atencion en TEC para cada caseta y sentido.",
             start_row=1,
         )
 
@@ -585,9 +642,14 @@ def build_contrast_outputs(export_tables: dict[str, pd.DataFrame], raw_df: pd.Da
         official_df = prep_official(official_path)
         peaje = official_df["PEAJE_N"].dropna().iloc[0]
         fecha = official_df["FECHA_D"].dropna().iloc[0]
-        official_f = official_df[(official_df["PEAJE_N"] == peaje) & (official_df["FECHA_D"] == fecha) & official_df["DATETIME_CASETA"].notna()].copy()
-        raw_f = raw_prep[(raw_prep["PEAJE_N"] == peaje) & (raw_prep["FECHA_D"] == fecha) & raw_prep["DATETIME_CASETA"].notna()].copy()
-        clean_f = clean_prep[(clean_prep["PEAJE_N"] == peaje) & (clean_prep["FECHA_D"] == fecha) & clean_prep["DATETIME_CASETA"].notna()].copy()
+        official_day = official_df[(official_df["PEAJE_N"] == peaje) & (official_df["FECHA_D"] == fecha) & official_df["DATETIME_CASETA"].notna()].copy()
+        raw_day = raw_prep[(raw_prep["PEAJE_N"] == peaje) & (raw_prep["FECHA_D"] == fecha) & raw_prep["DATETIME_CASETA"].notna()].copy()
+        clean_day = clean_prep[(clean_prep["PEAJE_N"] == peaje) & (clean_prep["FECHA_D"] == fecha) & clean_prep["DATETIME_CASETA"].notna()].copy()
+
+        windows_df = build_operating_windows(clean_day)
+        official_f = filter_to_operating_windows(official_day, windows_df, "VIA_TXT")
+        raw_f = filter_to_operating_windows(raw_day, windows_df, "CASETA_TXT")
+        clean_f = filter_to_operating_windows(clean_day, windows_df, "CASETA_TXT")
 
         match_exact, total_official = match_by_plate_time(official_f, clean_f, 0)
         match_30, _ = match_by_plate_time(official_f, clean_f, 30)
@@ -604,6 +666,7 @@ def build_contrast_outputs(export_tables: dict[str, pd.DataFrame], raw_df: pd.Da
                 "archivo_contraste": official_path.name,
                 "peaje": peaje,
                 "fecha": fecha.strftime("%Y-%m-%d"),
+                "casetas_con_ventana": len(windows_df),
                 "oficial_total": len(official_f),
                 "base_cruda_total": len(raw_f),
                 "base_limpia_total": len(clean_f),
