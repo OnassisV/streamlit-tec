@@ -145,6 +145,7 @@ TIME_COLUMNS = {
     "SALIDA CASETA": "T3",
 }
 TIME_GROUP_KEYS = ["PEAJE", "CASETA", "SENTIDO", "FECHA_DIA"]
+UMBRAL_SWAP_TIEMPOS_NEGATIVOS_SEGUNDOS = 10
 
 EXPECTED_PLATE_LENGTHS = {6}
 COMMON_PATTERNS = {"AAA999", "A9A999", "A99999", "AA9999", "AAAA99", "AA999"}
@@ -313,6 +314,8 @@ DEFAULT_CONFIG = {
     "aplicar_mediana_local": True,
     "aplicar_donantes": True,
     "aplicar_swap_final_t2_t3": True,
+    "aplicar_swap_tiempos_completos_cortos": True,
+    "modo_contraste_estricto": False,
 }
 
 
@@ -1220,6 +1223,107 @@ def consolidate_near_duplicate_plate_rows(df_in: pd.DataFrame, window_seconds: i
     return df.drop(columns=[col for col in df.columns if col.startswith("_DEDUP_")], errors="ignore")
 
 
+def consolidate_post_time_rows(df_in: pd.DataFrame, window_seconds: int) -> pd.DataFrame:
+    df = df_in.copy()
+    if df.empty:
+        return df
+
+    df["_POST_REF"] = df["T2_FINAL_5TA"].combine_first(df["T1_FINAL_5TA"]).combine_first(df["T3_FINAL_5TA"])
+    df["_POST_ORIG_COMPLETITUD"] = df[["T1", "T2", "T3"]].notna().sum(axis=1)
+    df["_POST_CASETA_SCORE"] = (
+        df["T2"].notna().astype(int) * 3
+        + df["T3"].notna().astype(int) * 3
+        + df["T1"].notna().astype(int)
+    )
+
+    group_cols = ["PEAJE", "SENTIDO", "FECHA_DIA", "PLACA_FINAL"]
+    valid_mask = (
+        df["PLACA_FINAL"].notna()
+        & df["FECHA_DIA"].notna()
+        & df["_POST_REF"].notna()
+    )
+    if not valid_mask.any():
+        return df.drop(columns=[col for col in df.columns if col.startswith("_POST_")], errors="ignore")
+
+    rows_to_drop: list[int] = []
+    for _, sub_df in df[valid_mask].sort_values(group_cols + ["_POST_REF", "_ORDEN_FILA"]).groupby(group_cols, dropna=False):
+        if len(sub_df) < 2:
+            continue
+
+        clusters: list[list[int]] = []
+        current_cluster: list[int] = []
+        previous_ref = None
+        for row_idx, row in sub_df.iterrows():
+            current_ref = row["_POST_REF"]
+            if not current_cluster:
+                current_cluster = [row_idx]
+            elif previous_ref is not None and (current_ref - previous_ref).total_seconds() <= window_seconds:
+                current_cluster.append(row_idx)
+            else:
+                if len(current_cluster) > 1:
+                    clusters.append(current_cluster)
+                current_cluster = [row_idx]
+            previous_ref = current_ref
+        if len(current_cluster) > 1:
+            clusters.append(current_cluster)
+
+        for cluster in clusters:
+            cluster_df = df.loc[cluster].copy()
+            exact_duplicate_mask = cluster_df.duplicated(
+                subset=["CASETA", "T1_FINAL_5TA", "T2_FINAL_5TA", "T3_FINAL_5TA"],
+                keep=False,
+            )
+            should_merge = (~cluster_df["TIEMPOS_COMPLETOS"]).any() or exact_duplicate_mask.any()
+            if not should_merge:
+                continue
+
+            cluster_df = cluster_df.sort_values(
+                ["_POST_CASETA_SCORE", "_POST_ORIG_COMPLETITUD", "_POST_REF", "_ORDEN_FILA"],
+                ascending=[False, False, True, True],
+                na_position="last",
+            )
+            canonical_idx = cluster_df.index[0]
+            source_indices = [idx for idx in cluster_df.index if idx != canonical_idx]
+            if not source_indices:
+                continue
+
+            observed_t1 = cluster_df.loc[cluster_df["T1"].notna(), "T1"]
+            if not observed_t1.empty:
+                df.at[canonical_idx, "T1_FINAL_5TA"] = observed_t1.min()
+                df.at[canonical_idx, "LLEGADA_COLA_FINAL"] = formatear_hora(df.at[canonical_idx, "T1_FINAL_5TA"])
+
+            canonical_t2 = df.at[canonical_idx, "T2_FINAL_5TA"]
+            canonical_t3 = df.at[canonical_idx, "T3_FINAL_5TA"]
+            if pd.notna(df.at[canonical_idx, "T1_FINAL_5TA"]) and pd.notna(canonical_t2) and pd.notna(canonical_t3):
+                df.at[canonical_idx, "TIEMPOS_COMPLETOS_CIERRE"] = True
+                df.at[canonical_idx, "T_COLA_FINAL"] = canonical_t2 - df.at[canonical_idx, "T1_FINAL_5TA"]
+                df.at[canonical_idx, "T_CASETA_FINAL"] = canonical_t3 - canonical_t2
+                df.at[canonical_idx, "T_TEC_FINAL"] = canonical_t3 - df.at[canonical_idx, "T1_FINAL_5TA"]
+                df.at[canonical_idx, "T_COLA_FINAL_TXT"] = formatear_hora(df.at[canonical_idx, "T_COLA_FINAL"])
+                df.at[canonical_idx, "T_CASETA_FINAL_TXT"] = formatear_hora(df.at[canonical_idx, "T_CASETA_FINAL"])
+                df.at[canonical_idx, "T_TEC_FINAL_TXT"] = formatear_hora(df.at[canonical_idx, "T_TEC_FINAL"])
+                df.at[canonical_idx, "LLEGADA_CASETA_FINAL"] = formatear_hora(canonical_t2)
+                df.at[canonical_idx, "SALIDA_CASETA_FINAL"] = formatear_hora(canonical_t3)
+
+            source_rows = df.loc[source_indices].copy()
+            source_ordenes = ", ".join(str(int(value)) for value in source_rows["_ORDEN_FILA"].tolist())
+            source_casetas = ", ".join(sorted(source_rows["CASETA"].astype(str).unique()))
+            merge_note = (
+                "Consolidacion posterior a tiempos: misma placa final dentro de ventana corta, "
+                f"fusionado con filas {_safe_text(source_ordenes)} y casetas {_safe_text(source_casetas)}."
+            )
+            current_action = str(df.at[canonical_idx, "TIEMPO_ACCION_CIERRE"] or "")
+            if current_action == "sin_cambio":
+                df.at[canonical_idx, "TIEMPO_ACCION_CIERRE"] = "consolidar_post_tiempo"
+            df.at[canonical_idx, "TIEMPO_MOTIVO_CIERRE"] = append_note(df.at[canonical_idx, "TIEMPO_MOTIVO_CIERRE"], merge_note)
+            rows_to_drop.extend(source_indices)
+
+    if rows_to_drop:
+        df = df.drop(index=sorted(set(rows_to_drop)))
+
+    return df.drop(columns=[col for col in df.columns if col.startswith("_POST_")], errors="ignore")
+
+
 def _safe_text(value) -> str:
     if pd.isna(value):
         return "s/d"
@@ -2072,16 +2176,54 @@ def run_time_cleaning(df_trabajo: pd.DataFrame, config: dict) -> dict[str, pd.Da
     df_final.loc[mascara_recuperada_final, "TIEMPO_ACCION_CIERRE"] = "swap_t2_t3_y_reconstruir_t1"
     df_final.loc[mascara_recuperada_final, "TIEMPO_MOTIVO_CIERRE"] = "t2_t3_intercambiados_y_t1_reconstruido_con_cola_donante"
 
-    df_final["TIEMPOS_COMPLETOS_CIERRE"] = df_final[["T1_FINAL_4TA", "T2_FINAL_4TA", "T3_FINAL_4TA"]].notna().all(axis=1)
-    df_final["LLEGADA_COLA_FINAL"] = df_final["T1_FINAL_4TA"].map(formatear_hora)
-    df_final["LLEGADA_CASETA_FINAL"] = df_final["T2_FINAL_4TA"].map(formatear_hora)
-    df_final["SALIDA_CASETA_FINAL"] = df_final["T3_FINAL_4TA"].map(formatear_hora)
-    df_final["T_COLA_FINAL"] = df_final["T2_FINAL_4TA"] - df_final["T1_FINAL_4TA"]
-    df_final["T_CASETA_FINAL"] = df_final["T3_FINAL_4TA"] - df_final["T2_FINAL_4TA"]
-    df_final["T_TEC_FINAL"] = df_final["T3_FINAL_4TA"] - df_final["T1_FINAL_4TA"]
+    df_final["T1_FINAL_5TA"] = df_final["T1_FINAL_4TA"]
+    df_final["T2_FINAL_5TA"] = df_final["T2_FINAL_4TA"]
+    df_final["T3_FINAL_5TA"] = df_final["T3_FINAL_4TA"]
+
+    umbral_swap = pd.to_timedelta(UMBRAL_SWAP_TIEMPOS_NEGATIVOS_SEGUNDOS, unit="s")
+    mascara_swap_t1_t2 = (
+        config.get("aplicar_swap_tiempos_completos_cortos", False)
+        & df_final[["T1_FINAL_4TA", "T2_FINAL_4TA", "T3_FINAL_4TA"]].notna().all(axis=1)
+        & (df_final["T1_FINAL_4TA"] > df_final["T2_FINAL_4TA"])
+        & ((df_final["T1_FINAL_4TA"] - df_final["T2_FINAL_4TA"]) <= umbral_swap)
+        & (df_final["T1_FINAL_4TA"] <= df_final["T3_FINAL_4TA"])
+    )
+    t1_swap_values = df_final.loc[mascara_swap_t1_t2, "T1_FINAL_4TA"].copy()
+    df_final.loc[mascara_swap_t1_t2, "T1_FINAL_5TA"] = df_final.loc[mascara_swap_t1_t2, "T2_FINAL_4TA"]
+    df_final.loc[mascara_swap_t1_t2, "T2_FINAL_5TA"] = t1_swap_values
+
+    mascara_swap_t2_t3_completos = (
+        config.get("aplicar_swap_tiempos_completos_cortos", False)
+        & df_final[["T1_FINAL_5TA", "T2_FINAL_5TA", "T3_FINAL_5TA"]].notna().all(axis=1)
+        & (df_final["T2_FINAL_5TA"] > df_final["T3_FINAL_5TA"])
+        & ((df_final["T2_FINAL_5TA"] - df_final["T3_FINAL_5TA"]) <= umbral_swap)
+        & (df_final["T1_FINAL_5TA"] <= df_final["T3_FINAL_5TA"])
+    )
+    t2_swap_values = df_final.loc[mascara_swap_t2_t3_completos, "T2_FINAL_5TA"].copy()
+    df_final.loc[mascara_swap_t2_t3_completos, "T2_FINAL_5TA"] = df_final.loc[mascara_swap_t2_t3_completos, "T3_FINAL_5TA"]
+    df_final.loc[mascara_swap_t2_t3_completos, "T3_FINAL_5TA"] = t2_swap_values
+
+    mascara_swap_completo = mascara_swap_t1_t2 | mascara_swap_t2_t3_completos
+    mascara_swap_doble = mascara_swap_t1_t2 & mascara_swap_t2_t3_completos
+    df_final.loc[mascara_swap_t1_t2 & ~mascara_swap_t2_t3_completos, "TIEMPO_ACCION_CIERRE"] = "swap_t1_t2_caso_completo"
+    df_final.loc[mascara_swap_t1_t2 & ~mascara_swap_t2_t3_completos, "TIEMPO_MOTIVO_CIERRE"] = "t1_y_t2_intercambiados_por_inversion_corta_en_registro_completo"
+    df_final.loc[mascara_swap_t2_t3_completos & ~mascara_swap_t1_t2, "TIEMPO_ACCION_CIERRE"] = "swap_t2_t3_caso_completo"
+    df_final.loc[mascara_swap_t2_t3_completos & ~mascara_swap_t1_t2, "TIEMPO_MOTIVO_CIERRE"] = "t2_y_t3_intercambiados_por_inversion_corta_en_registro_completo"
+    df_final.loc[mascara_swap_doble, "TIEMPO_ACCION_CIERRE"] = "swap_tiempos_caso_completo"
+    df_final.loc[mascara_swap_doble, "TIEMPO_MOTIVO_CIERRE"] = "t1_t2_y_t2_t3_intercambiados_por_inversiones_cortas_en_registro_completo"
+
+    df_final["TIEMPOS_COMPLETOS_CIERRE"] = df_final[["T1_FINAL_5TA", "T2_FINAL_5TA", "T3_FINAL_5TA"]].notna().all(axis=1)
+    df_final["LLEGADA_COLA_FINAL"] = df_final["T1_FINAL_5TA"].map(formatear_hora)
+    df_final["LLEGADA_CASETA_FINAL"] = df_final["T2_FINAL_5TA"].map(formatear_hora)
+    df_final["SALIDA_CASETA_FINAL"] = df_final["T3_FINAL_5TA"].map(formatear_hora)
+    df_final["T_COLA_FINAL"] = df_final["T2_FINAL_5TA"] - df_final["T1_FINAL_5TA"]
+    df_final["T_CASETA_FINAL"] = df_final["T3_FINAL_5TA"] - df_final["T2_FINAL_5TA"]
+    df_final["T_TEC_FINAL"] = df_final["T3_FINAL_5TA"] - df_final["T1_FINAL_5TA"]
     df_final["T_COLA_FINAL_TXT"] = df_final["T_COLA_FINAL"].map(formatear_hora)
     df_final["T_CASETA_FINAL_TXT"] = df_final["T_CASETA_FINAL"].map(formatear_hora)
     df_final["T_TEC_FINAL_TXT"] = df_final["T_TEC_FINAL"].map(formatear_hora)
+
+    df_final = consolidate_post_time_rows(df_final, DEDUPLICACION_DUPLICADO_CERCANO_SEGUNDOS)
 
     df_pendientes = df_final[~df_final["TIEMPOS_COMPLETOS_CIERRE"]].copy()
     resumen_tiempos = (
@@ -2139,6 +2281,46 @@ def build_export_tables(
         | df_export_base["TIEMPO_ACCION_FINAL"].ne("sin_cambio")
     )
     df_export_base["PLACA_PENDIENTE_REVISION"] = df_export_base["PLACA_ACCION_FINAL"].eq("mantener_observada")
+
+    casos_excluidos_contraste = pd.DataFrame()
+    if config.get("modo_contraste_estricto", False):
+        mascara_exclusion_contraste = df_export_base["TIEMPOS_COMPLETOS_CIERRE"] & df_export_base["TIEMPO_ACCION_FINAL"].isin(
+            ["imputar_mediana_local", "imputar_donante_cola"]
+        )
+        if mascara_exclusion_contraste.any():
+            casos_excluidos_contraste = df_export_base.loc[mascara_exclusion_contraste].copy()
+            casos_excluidos_contraste = casos_excluidos_contraste[
+                [
+                    "PEAJE",
+                    "CASETA",
+                    "SENTIDO",
+                    "FECHA",
+                    "VEHICULO",
+                    "PLACA",
+                    "PLACA_FINAL",
+                    "ACCION_REALIZADA",
+                    "TIEMPO_MOTIVO_FINAL",
+                    "LLEGADA_COLA_FINAL",
+                    "LLEGADA_CASETA_FINAL",
+                    "SALIDA_CASETA_FINAL",
+                    "T_TEC_FINAL_TXT",
+                    "T_CASETA_FINAL_TXT",
+                ]
+            ].rename(
+                columns={
+                    "TIEMPO_MOTIVO_FINAL": "MOTIVO_ELIMINACION",
+                    "LLEGADA_COLA_FINAL": "LLEGADA COLA",
+                    "LLEGADA_CASETA_FINAL": "LLEGADA CASETA",
+                    "SALIDA_CASETA_FINAL": "SALIDA CASETA",
+                    "T_TEC_FINAL_TXT": "T. TEC",
+                    "T_CASETA_FINAL_TXT": "T. CASETA",
+                }
+            )
+            casos_excluidos_contraste["ETAPA_ELIMINACION"] = "contraste_estricto"
+            casos_excluidos_contraste["ACCION_REALIZADA"] = (
+                "excluido_contraste_estricto:" + casos_excluidos_contraste["ACCION_REALIZADA"].astype(str)
+            )
+            df_export_base = df_export_base.loc[~mascara_exclusion_contraste].copy()
 
     base_limpia = df_export_base[df_export_base["TIEMPOS_COMPLETOS_CIERRE"]].copy()
     base_limpia = base_limpia[
@@ -2246,6 +2428,7 @@ def build_export_tables(
         [
             eliminados_placa.reindex(columns=columnas_eliminados),
             eliminados_tiempo.reindex(columns=columnas_eliminados),
+            casos_excluidos_contraste.reindex(columns=columnas_eliminados),
         ],
         ignore_index=True,
     )
@@ -2282,6 +2465,7 @@ def build_export_tables(
             {"seccion": "general", "indicador": "filas_base_limpia", "valor": len(base_limpia)},
             {"seccion": "general", "indicador": "filas_eliminadas", "valor": len(casos_eliminados)},
             {"seccion": "general", "indicador": "filas_pendientes", "valor": len(casos_pendientes)},
+            {"seccion": "general", "indicador": "filas_excluidas_contraste_estricto", "valor": len(casos_excluidos_contraste)},
         ]
     )
     for idx, row in plate_result["resumen_acciones_placa"].reset_index().iterrows():
@@ -4216,6 +4400,12 @@ def render_processing_page(storage_backend, current_user: dict | None) -> None:
                     value=DEFAULT_CONFIG["aplicar_donantes"],
                     disabled=not can_manage_general_config,
                     help="Usa medianas de casetas, dias o sentidos parecidos como apoyo para recuperar tiempos.",
+                ),
+                "modo_contraste_estricto": st.checkbox(
+                    "Excluir de la base limpia final los casos recuperados por mediana local y donantes",
+                    value=DEFAULT_CONFIG["modo_contraste_estricto"],
+                    disabled=not can_manage_general_config,
+                    help="Mantiene la interpolacion, pero saca de la salida final los casos mas dificiles de contrastar directamente con peaje.",
                 ),
                 "aplicar_swap_final_t2_t3": st.checkbox(
                     "Corregir un posible intercambio final entre llegada y salida de caseta",
