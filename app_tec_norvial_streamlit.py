@@ -1324,6 +1324,57 @@ def consolidate_post_time_rows(df_in: pd.DataFrame, window_seconds: int) -> pd.D
     return df.drop(columns=[col for col in df.columns if col.startswith("_POST_")], errors="ignore")
 
 
+def refresh_final_time_outputs(df_in: pd.DataFrame) -> pd.DataFrame:
+    df = df_in.copy()
+    df["TIEMPOS_COMPLETOS_CIERRE"] = df[["T1_FINAL_5TA", "T2_FINAL_5TA", "T3_FINAL_5TA"]].notna().all(axis=1)
+    df["LLEGADA_COLA_FINAL"] = df["T1_FINAL_5TA"].map(formatear_hora)
+    df["LLEGADA_CASETA_FINAL"] = df["T2_FINAL_5TA"].map(formatear_hora)
+    df["SALIDA_CASETA_FINAL"] = df["T3_FINAL_5TA"].map(formatear_hora)
+    df["T_COLA_FINAL"] = df["T2_FINAL_5TA"] - df["T1_FINAL_5TA"]
+    df["T_CASETA_FINAL"] = df["T3_FINAL_5TA"] - df["T2_FINAL_5TA"]
+    df["T_TEC_FINAL"] = df["T3_FINAL_5TA"] - df["T1_FINAL_5TA"]
+    df["T_COLA_FINAL_TXT"] = df["T_COLA_FINAL"].map(formatear_hora)
+    df["T_CASETA_FINAL_TXT"] = df["T_CASETA_FINAL"].map(formatear_hora)
+    df["T_TEC_FINAL_TXT"] = df["T_TEC_FINAL"].map(formatear_hora)
+    return df
+
+
+def apply_short_complete_time_swaps(df_in: pd.DataFrame, config: dict) -> pd.DataFrame:
+    df = df_in.copy()
+    if df.empty or not config.get("aplicar_swap_tiempos_completos_cortos", False):
+        return refresh_final_time_outputs(df)
+
+    umbral_swap = pd.to_timedelta(UMBRAL_SWAP_TIEMPOS_NEGATIVOS_SEGUNDOS, unit="s")
+    mascara_swap_t1_t2 = (
+        df[["T1_FINAL_5TA", "T2_FINAL_5TA", "T3_FINAL_5TA"]].notna().all(axis=1)
+        & (df["T1_FINAL_5TA"] > df["T2_FINAL_5TA"])
+        & ((df["T1_FINAL_5TA"] - df["T2_FINAL_5TA"]) <= umbral_swap)
+        & (df["T1_FINAL_5TA"] <= df["T3_FINAL_5TA"])
+    )
+    t1_swap_values = df.loc[mascara_swap_t1_t2, "T1_FINAL_5TA"].copy()
+    df.loc[mascara_swap_t1_t2, "T1_FINAL_5TA"] = df.loc[mascara_swap_t1_t2, "T2_FINAL_5TA"]
+    df.loc[mascara_swap_t1_t2, "T2_FINAL_5TA"] = t1_swap_values
+
+    mascara_swap_t2_t3 = (
+        df[["T1_FINAL_5TA", "T2_FINAL_5TA", "T3_FINAL_5TA"]].notna().all(axis=1)
+        & (df["T2_FINAL_5TA"] > df["T3_FINAL_5TA"])
+        & ((df["T2_FINAL_5TA"] - df["T3_FINAL_5TA"]) <= umbral_swap)
+        & (df["T1_FINAL_5TA"] <= df["T3_FINAL_5TA"])
+    )
+    t2_swap_values = df.loc[mascara_swap_t2_t3, "T2_FINAL_5TA"].copy()
+    df.loc[mascara_swap_t2_t3, "T2_FINAL_5TA"] = df.loc[mascara_swap_t2_t3, "T3_FINAL_5TA"]
+    df.loc[mascara_swap_t2_t3, "T3_FINAL_5TA"] = t2_swap_values
+
+    mascara_swap_doble = mascara_swap_t1_t2 & mascara_swap_t2_t3
+    df.loc[mascara_swap_t1_t2 & ~mascara_swap_t2_t3, "TIEMPO_ACCION_CIERRE"] = "swap_t1_t2_caso_completo"
+    df.loc[mascara_swap_t1_t2 & ~mascara_swap_t2_t3, "TIEMPO_MOTIVO_CIERRE"] = "t1_y_t2_intercambiados_por_inversion_corta_en_registro_completo"
+    df.loc[mascara_swap_t2_t3 & ~mascara_swap_t1_t2, "TIEMPO_ACCION_CIERRE"] = "swap_t2_t3_caso_completo"
+    df.loc[mascara_swap_t2_t3 & ~mascara_swap_t1_t2, "TIEMPO_MOTIVO_CIERRE"] = "t2_y_t3_intercambiados_por_inversion_corta_en_registro_completo"
+    df.loc[mascara_swap_doble, "TIEMPO_ACCION_CIERRE"] = "swap_tiempos_caso_completo"
+    df.loc[mascara_swap_doble, "TIEMPO_MOTIVO_CIERRE"] = "t1_t2_y_t2_t3_intercambiados_por_inversiones_cortas_en_registro_completo"
+    return refresh_final_time_outputs(df)
+
+
 def _safe_text(value) -> str:
     if pd.isna(value):
         return "s/d"
@@ -2179,51 +2230,10 @@ def run_time_cleaning(df_trabajo: pd.DataFrame, config: dict) -> dict[str, pd.Da
     df_final["T1_FINAL_5TA"] = df_final["T1_FINAL_4TA"]
     df_final["T2_FINAL_5TA"] = df_final["T2_FINAL_4TA"]
     df_final["T3_FINAL_5TA"] = df_final["T3_FINAL_4TA"]
-
-    umbral_swap = pd.to_timedelta(UMBRAL_SWAP_TIEMPOS_NEGATIVOS_SEGUNDOS, unit="s")
-    mascara_swap_t1_t2 = (
-        config.get("aplicar_swap_tiempos_completos_cortos", False)
-        & df_final[["T1_FINAL_4TA", "T2_FINAL_4TA", "T3_FINAL_4TA"]].notna().all(axis=1)
-        & (df_final["T1_FINAL_4TA"] > df_final["T2_FINAL_4TA"])
-        & ((df_final["T1_FINAL_4TA"] - df_final["T2_FINAL_4TA"]) <= umbral_swap)
-        & (df_final["T1_FINAL_4TA"] <= df_final["T3_FINAL_4TA"])
-    )
-    t1_swap_values = df_final.loc[mascara_swap_t1_t2, "T1_FINAL_4TA"].copy()
-    df_final.loc[mascara_swap_t1_t2, "T1_FINAL_5TA"] = df_final.loc[mascara_swap_t1_t2, "T2_FINAL_4TA"]
-    df_final.loc[mascara_swap_t1_t2, "T2_FINAL_5TA"] = t1_swap_values
-
-    mascara_swap_t2_t3_completos = (
-        config.get("aplicar_swap_tiempos_completos_cortos", False)
-        & df_final[["T1_FINAL_5TA", "T2_FINAL_5TA", "T3_FINAL_5TA"]].notna().all(axis=1)
-        & (df_final["T2_FINAL_5TA"] > df_final["T3_FINAL_5TA"])
-        & ((df_final["T2_FINAL_5TA"] - df_final["T3_FINAL_5TA"]) <= umbral_swap)
-        & (df_final["T1_FINAL_5TA"] <= df_final["T3_FINAL_5TA"])
-    )
-    t2_swap_values = df_final.loc[mascara_swap_t2_t3_completos, "T2_FINAL_5TA"].copy()
-    df_final.loc[mascara_swap_t2_t3_completos, "T2_FINAL_5TA"] = df_final.loc[mascara_swap_t2_t3_completos, "T3_FINAL_5TA"]
-    df_final.loc[mascara_swap_t2_t3_completos, "T3_FINAL_5TA"] = t2_swap_values
-
-    mascara_swap_completo = mascara_swap_t1_t2 | mascara_swap_t2_t3_completos
-    mascara_swap_doble = mascara_swap_t1_t2 & mascara_swap_t2_t3_completos
-    df_final.loc[mascara_swap_t1_t2 & ~mascara_swap_t2_t3_completos, "TIEMPO_ACCION_CIERRE"] = "swap_t1_t2_caso_completo"
-    df_final.loc[mascara_swap_t1_t2 & ~mascara_swap_t2_t3_completos, "TIEMPO_MOTIVO_CIERRE"] = "t1_y_t2_intercambiados_por_inversion_corta_en_registro_completo"
-    df_final.loc[mascara_swap_t2_t3_completos & ~mascara_swap_t1_t2, "TIEMPO_ACCION_CIERRE"] = "swap_t2_t3_caso_completo"
-    df_final.loc[mascara_swap_t2_t3_completos & ~mascara_swap_t1_t2, "TIEMPO_MOTIVO_CIERRE"] = "t2_y_t3_intercambiados_por_inversion_corta_en_registro_completo"
-    df_final.loc[mascara_swap_doble, "TIEMPO_ACCION_CIERRE"] = "swap_tiempos_caso_completo"
-    df_final.loc[mascara_swap_doble, "TIEMPO_MOTIVO_CIERRE"] = "t1_t2_y_t2_t3_intercambiados_por_inversiones_cortas_en_registro_completo"
-
-    df_final["TIEMPOS_COMPLETOS_CIERRE"] = df_final[["T1_FINAL_5TA", "T2_FINAL_5TA", "T3_FINAL_5TA"]].notna().all(axis=1)
-    df_final["LLEGADA_COLA_FINAL"] = df_final["T1_FINAL_5TA"].map(formatear_hora)
-    df_final["LLEGADA_CASETA_FINAL"] = df_final["T2_FINAL_5TA"].map(formatear_hora)
-    df_final["SALIDA_CASETA_FINAL"] = df_final["T3_FINAL_5TA"].map(formatear_hora)
-    df_final["T_COLA_FINAL"] = df_final["T2_FINAL_5TA"] - df_final["T1_FINAL_5TA"]
-    df_final["T_CASETA_FINAL"] = df_final["T3_FINAL_5TA"] - df_final["T2_FINAL_5TA"]
-    df_final["T_TEC_FINAL"] = df_final["T3_FINAL_5TA"] - df_final["T1_FINAL_5TA"]
-    df_final["T_COLA_FINAL_TXT"] = df_final["T_COLA_FINAL"].map(formatear_hora)
-    df_final["T_CASETA_FINAL_TXT"] = df_final["T_CASETA_FINAL"].map(formatear_hora)
-    df_final["T_TEC_FINAL_TXT"] = df_final["T_TEC_FINAL"].map(formatear_hora)
+    df_final = apply_short_complete_time_swaps(df_final, config)
 
     df_final = consolidate_post_time_rows(df_final, DEDUPLICACION_DUPLICADO_CERCANO_SEGUNDOS)
+    df_final = apply_short_complete_time_swaps(df_final, config)
 
     df_pendientes = df_final[~df_final["TIEMPOS_COMPLETOS_CIERRE"]].copy()
     resumen_tiempos = (
