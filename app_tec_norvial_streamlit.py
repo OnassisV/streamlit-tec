@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
+import hashlib
 from io import BytesIO
+import json
 from pathlib import Path
 import re
 import unicodedata
@@ -31,6 +33,7 @@ from app_storage import build_storage_backend
 APP_TITLE = "Procesador TEC de Peajes"
 APP_NAV_KEY = "app_selected_page"
 TEC_RESULT_STATE_KEY = "tec_last_processing_result"
+PROCESSING_SIGNATURE_VERSION = "2026-03-19-v2"
 CONTRACTOR_LOGO_PATH = Path(__file__).parent / "ChatGPT Image 18 mar 2026, 03_37_00 a.m..png"
 INFORME_TEMPLATE_CANDIDATES = (
     Path(__file__).parent / "templates" / "Informe TEC NORVIAL - 2022.docx",
@@ -2585,13 +2588,36 @@ def derive_output_filenames(uploaded_name: str) -> dict[str, str]:
     }
 
 
-def build_processing_signature(uploaded_name: str, selected_sheet: str | None) -> str:
-    return f"{uploaded_name}::{selected_sheet or ''}"
+def build_processing_signature(
+    uploaded_name: str,
+    selected_sheet: str | None,
+    file_bytes: bytes,
+    mapping: dict[str, str],
+    config: dict[str, object],
+    manual_rules_df: pd.DataFrame,
+) -> str:
+    manual_rules_payload = (
+        manual_rules_df.fillna("")
+        .sort_index(axis=1)
+        .to_dict(orient="records")
+    )
+    signature_payload = {
+        "version": PROCESSING_SIGNATURE_VERSION,
+        "uploaded_name": uploaded_name,
+        "selected_sheet": selected_sheet or "",
+        "file_sha1": hashlib.sha1(file_bytes).hexdigest(),
+        "mapping": {key: mapping.get(key, "") for key in sorted(mapping)},
+        "config": {key: config.get(key) for key in sorted(config)},
+        "manual_rules": manual_rules_payload,
+    }
+    serialized = json.dumps(signature_payload, sort_keys=True, ensure_ascii=True, default=str)
+    return hashlib.sha1(serialized.encode("utf-8")).hexdigest()
 
 
 def build_processing_artifacts(
     uploaded_name: str,
     selected_sheet: str | None,
+    processing_signature: str,
     result: dict[str, object],
 ) -> dict[str, object]:
     export_tables = result["export_tables"]
@@ -2600,7 +2626,7 @@ def build_processing_artifacts(
     complementary_package = result["complementary_package"]
     output_names = derive_output_filenames(uploaded_name)
     return {
-        "input_signature": build_processing_signature(uploaded_name, selected_sheet),
+        "input_signature": processing_signature,
         "source_name": uploaded_name,
         "selected_sheet": selected_sheet,
         "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -4435,7 +4461,15 @@ def render_processing_page(storage_backend, current_user: dict | None) -> None:
         key="manual_rules_editor",
     )
 
-    current_signature = build_processing_signature(uploaded_file.name, selected_sheet)
+    uploaded_file_bytes = uploaded_file.getvalue()
+    current_signature = build_processing_signature(
+        uploaded_file.name,
+        selected_sheet,
+        uploaded_file_bytes,
+        mapping,
+        config,
+        reglas_df,
+    )
     processed_payload = st.session_state.get(TEC_RESULT_STATE_KEY)
 
     if st.button("Procesar base", type="primary", use_container_width=True):
@@ -4462,7 +4496,7 @@ def render_processing_page(storage_backend, current_user: dict | None) -> None:
             build_run_payload(uploaded_file.name, mapping, config, export_tables)
         )
 
-        processed_payload = build_processing_artifacts(uploaded_file.name, selected_sheet, result)
+        processed_payload = build_processing_artifacts(uploaded_file.name, selected_sheet, current_signature, result)
         st.session_state[TEC_RESULT_STATE_KEY] = processed_payload
 
     if processed_payload and processed_payload.get("input_signature") == current_signature:
