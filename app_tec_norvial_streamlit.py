@@ -1344,7 +1344,7 @@ def refresh_final_time_outputs(df_in: pd.DataFrame) -> pd.DataFrame:
 
 def apply_short_complete_time_swaps(df_in: pd.DataFrame, config: dict) -> pd.DataFrame:
     df = df_in.copy()
-    if df.empty or not config.get("aplicar_swap_tiempos_completos_cortos", False):
+    if df.empty or not config.get("aplicar_swap_tiempos_completos_cortos", DEFAULT_CONFIG["aplicar_swap_tiempos_completos_cortos"]):
         return refresh_final_time_outputs(df)
 
     umbral_swap = pd.to_timedelta(UMBRAL_SWAP_TIEMPOS_NEGATIVOS_SEGUNDOS, unit="s")
@@ -3784,6 +3784,7 @@ def build_run_payload(
 
 
 def process_pipeline(df_std: pd.DataFrame, config: dict, manual_rules_df: pd.DataFrame) -> dict[str, object]:
+    config = {**DEFAULT_CONFIG, **config}
     df_std = df_std.copy()
     df_std["_ORDEN_FILA"] = range(len(df_std))
     if config["aplicar_limpieza_placa"]:
@@ -4436,6 +4437,12 @@ def render_processing_page(storage_backend, current_user: dict | None) -> None:
                     value=DEFAULT_CONFIG["aplicar_donantes"],
                     disabled=not can_manage_general_config,
                     help="Usa medianas de casetas, dias o sentidos parecidos como apoyo para recuperar tiempos.",
+                ),
+                "aplicar_swap_tiempos_completos_cortos": st.checkbox(
+                    "Corregir inversiones cortas en registros completos",
+                    value=DEFAULT_CONFIG["aplicar_swap_tiempos_completos_cortos"],
+                    disabled=not can_manage_general_config,
+                    help="Intercambia T1-T2 o T2-T3 cuando quedaron invertidos por pocos segundos dentro de un registro completo.",
                 ),
                 "modo_contraste_estricto": st.checkbox(
                     "Excluir de la base limpia final los casos recuperados por mediana local y donantes",
