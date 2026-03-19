@@ -183,7 +183,6 @@ ACCIONES_PLACA_AJUSTE = {
     "corregir_a_recorte_sufijo_x",
     "corregir_manual",
 }
-
 DEFAULT_MANUAL_RULES = [
     {
         "activo": True,
@@ -191,6 +190,10 @@ DEFAULT_MANUAL_RULES = [
         "placa_origen": "D4P750UN",
         "placa_destino": "D4P750",
         "longitud_objetivo": pd.NA,
+        "peaje": pd.NA,
+        "caseta": pd.NA,
+        "sentido": pd.NA,
+        "fecha": pd.NA,
         "comentario": "Correccion manual heredada del caso Norvial.",
     },
     {
@@ -199,6 +202,10 @@ DEFAULT_MANUAL_RULES = [
         "placa_origen": "TDA824UN",
         "placa_destino": "TDA824",
         "longitud_objetivo": pd.NA,
+        "peaje": pd.NA,
+        "caseta": pd.NA,
+        "sentido": pd.NA,
+        "fecha": pd.NA,
         "comentario": "Correccion manual heredada del caso Norvial.",
     },
     {
@@ -207,6 +214,10 @@ DEFAULT_MANUAL_RULES = [
         "placa_origen": "D00191X",
         "placa_destino": "D0O191",
         "longitud_objetivo": pd.NA,
+        "peaje": pd.NA,
+        "caseta": pd.NA,
+        "sentido": pd.NA,
+        "fecha": pd.NA,
         "comentario": "Correccion manual heredada del caso Norvial.",
     },
     {
@@ -215,6 +226,10 @@ DEFAULT_MANUAL_RULES = [
         "placa_origen": "BNI87D",
         "placa_destino": "BNI870",
         "longitud_objetivo": pd.NA,
+        "peaje": pd.NA,
+        "caseta": pd.NA,
+        "sentido": pd.NA,
+        "fecha": pd.NA,
         "comentario": "Correccion manual heredada del caso Norvial.",
     },
     {
@@ -223,6 +238,10 @@ DEFAULT_MANUAL_RULES = [
         "placa_origen": "2PL067",
         "placa_destino": "ZPL067",
         "longitud_objetivo": pd.NA,
+        "peaje": pd.NA,
+        "caseta": pd.NA,
+        "sentido": pd.NA,
+        "fecha": pd.NA,
         "comentario": "Correccion manual heredada del caso Norvial.",
     },
     {
@@ -231,6 +250,10 @@ DEFAULT_MANUAL_RULES = [
         "placa_origen": "VCJV27CH",
         "placa_destino": pd.NA,
         "longitud_objetivo": pd.NA,
+        "peaje": pd.NA,
+        "caseta": pd.NA,
+        "sentido": pd.NA,
+        "fecha": pd.NA,
         "comentario": "Excluir del analisis.",
     },
     {
@@ -239,7 +262,23 @@ DEFAULT_MANUAL_RULES = [
         "placa_origen": "VCJV28CH",
         "placa_destino": pd.NA,
         "longitud_objetivo": pd.NA,
+        "peaje": pd.NA,
+        "caseta": pd.NA,
+        "sentido": pd.NA,
+        "fecha": pd.NA,
         "comentario": "Excluir del analisis.",
+    },
+    {
+        "activo": True,
+        "tipo_regla": "eliminar_placa",
+        "placa_origen": "VHT567",
+        "placa_destino": pd.NA,
+        "longitud_objetivo": pd.NA,
+        "peaje": "VARIANTE",
+        "caseta": "2",
+        "sentido": "ASCENDENTE",
+        "fecha": "2026-02-20",
+        "comentario": "Excluir registro de prueba identificado en la toma preliminar.",
     },
     {
         "activo": True,
@@ -247,6 +286,10 @@ DEFAULT_MANUAL_RULES = [
         "placa_origen": pd.NA,
         "placa_destino": pd.NA,
         "longitud_objetivo": 1,
+        "peaje": pd.NA,
+        "caseta": pd.NA,
+        "sentido": pd.NA,
+        "fecha": pd.NA,
         "comentario": "Excluir placas de largo 1.",
     },
 ]
@@ -908,32 +951,113 @@ def timedelta_a_minutos(valor):
     return round(valor.total_seconds() / 60, 2)
 
 
-def parse_manual_rules(rules_df: pd.DataFrame) -> tuple[dict[str, str], set[str], set[int]]:
+def parse_manual_rules(rules_df: pd.DataFrame) -> pd.DataFrame:
     reglas = rules_df.copy()
+    expected_columns = [
+        "activo",
+        "tipo_regla",
+        "placa_origen",
+        "placa_destino",
+        "longitud_objetivo",
+        "peaje",
+        "caseta",
+        "sentido",
+        "fecha",
+        "comentario",
+    ]
+    for column_name in expected_columns:
+        if column_name not in reglas.columns:
+            reglas[column_name] = pd.NA
     if reglas.empty:
-        return {}, set(), set()
+        return reglas[expected_columns]
     reglas = reglas[reglas["activo"].fillna(False)].copy()
     reglas["tipo_regla"] = reglas["tipo_regla"].astype(str).str.strip()
     reglas["placa_origen"] = reglas["placa_origen"].fillna("").astype(str).str.upper().str.strip()
     reglas["placa_destino"] = reglas["placa_destino"].fillna("").astype(str).str.upper().str.strip()
     reglas["longitud_objetivo"] = pd.to_numeric(reglas["longitud_objetivo"], errors="coerce")
+    for scope_column in ["peaje", "caseta", "sentido"]:
+        reglas[scope_column] = reglas[scope_column].fillna("").astype(str).str.upper().str.strip()
+    reglas["fecha"] = pd.to_datetime(reglas["fecha"], errors="coerce").dt.normalize()
+    return reglas[expected_columns]
 
-    correcciones = {
-        row["placa_origen"]: row["placa_destino"]
-        for _, row in reglas.iterrows()
-        if row["tipo_regla"] == "corregir_placa" and row["placa_origen"] and row["placa_destino"]
-    }
-    eliminar_placa = {
-        row["placa_origen"]
-        for _, row in reglas.iterrows()
-        if row["tipo_regla"] == "eliminar_placa" and row["placa_origen"]
-    }
-    eliminar_longitud = {
-        int(row["longitud_objetivo"])
-        for _, row in reglas.iterrows()
-        if row["tipo_regla"] == "eliminar_por_longitud" and pd.notna(row["longitud_objetivo"])
-    }
-    return correcciones, eliminar_placa, eliminar_longitud
+
+def manual_rule_matches_row(rule: pd.Series, row: pd.Series, normalized_plate: str) -> bool:
+    rule_type = str(rule.get("tipo_regla") or "").strip()
+
+    if rule_type in {"corregir_placa", "eliminar_placa"}:
+        if not str(rule.get("placa_origen") or "").strip():
+            return False
+        if normalized_plate != str(rule.get("placa_origen") or "").strip():
+            return False
+    elif rule_type == "eliminar_por_longitud":
+        length_target = rule.get("longitud_objetivo")
+        if pd.isna(length_target) or len(normalized_plate) != int(length_target):
+            return False
+    else:
+        return False
+
+    peaje_rule = str(rule.get("peaje") or "").strip()
+    if peaje_rule and str(row.get("PEAJE") or "").upper().strip() != peaje_rule:
+        return False
+
+    caseta_rule = str(rule.get("caseta") or "").strip()
+    if caseta_rule and str(row.get("CASETA") or "").upper().strip() != caseta_rule:
+        return False
+
+    sentido_rule = str(rule.get("sentido") or "").strip()
+    if sentido_rule and str(row.get("SENTIDO") or "").upper().strip() != sentido_rule:
+        return False
+
+    fecha_rule = rule.get("fecha")
+    if pd.notna(fecha_rule):
+        row_date = pd.to_datetime(row.get("FECHA"), errors="coerce")
+        if pd.isna(row_date) or row_date.normalize() != fecha_rule:
+            return False
+
+    return True
+
+
+def apply_manual_rules_to_df(df: pd.DataFrame, rules_df: pd.DataFrame) -> pd.DataFrame:
+    reglas = parse_manual_rules(rules_df)
+    if reglas.empty:
+        return df
+
+    for idx, row in df.iterrows():
+        normalized = str(row["PLACA_NORMALIZADA"])
+        for _, rule in reglas.iterrows():
+            if not manual_rule_matches_row(rule, row, normalized):
+                continue
+
+            rule_type = str(rule["tipo_regla"])
+            comentario = str(rule.get("comentario") or "").strip()
+            scope_parts = []
+            for scope_column, row_column in [("peaje", "PEAJE"), ("caseta", "CASETA"), ("sentido", "SENTIDO")]:
+                rule_value = str(rule.get(scope_column) or "").strip()
+                if rule_value:
+                    scope_parts.append(f"{scope_column}={row.get(row_column)}")
+            if pd.notna(rule.get("fecha")):
+                scope_parts.append(f"fecha={pd.to_datetime(row.get('FECHA'), errors='coerce').strftime('%Y-%m-%d')}")
+            scope_text = f" [{', '.join(scope_parts)}]" if scope_parts else ""
+
+            if rule_type == "corregir_placa":
+                target = str(rule.get("placa_destino") or "").strip()
+                if not target:
+                    continue
+                df.at[idx, "PLACA_ACCION_FINAL"] = "corregir_manual"
+                df.at[idx, "PLACA_FINAL_DECIDIDA"] = target
+                df.at[idx, "PLACA_EXCLUIR_ANALISIS"] = False
+                df.at[idx, "PLACA_AJUSTE_MANUAL"] = f"Correccion manual{scope_text}: {normalized} -> {target}. {comentario}".strip()
+            elif rule_type == "eliminar_placa":
+                df.at[idx, "PLACA_ACCION_FINAL"] = "excluir_analisis_placa"
+                df.at[idx, "PLACA_EXCLUIR_ANALISIS"] = True
+                df.at[idx, "PLACA_AJUSTE_MANUAL"] = f"Eliminacion manual{scope_text}: {normalized}. {comentario}".strip()
+            elif rule_type == "eliminar_por_longitud" and not bool(df.at[idx, "PLACA_EXCLUIR_ANALISIS"]):
+                df.at[idx, "PLACA_ACCION_FINAL"] = "excluir_analisis_placa"
+                df.at[idx, "PLACA_EXCLUIR_ANALISIS"] = True
+                df.at[idx, "PLACA_AJUSTE_MANUAL"] = f"Eliminacion manual por longitud {len(normalized)}{scope_text}. {comentario}".strip()
+            break
+
+    return df
 
 
 def load_input_dataframe(uploaded_file, sheet_name: str | None) -> pd.DataFrame:
@@ -1146,22 +1270,8 @@ def run_plate_cleaning(
 
     df_revision_placas = df[df["PLACA_ESTADO"] == "sospechosa"].copy()
     if df_revision_placas.empty:
-        correcciones_manual, eliminar_manual, longitudes_eliminar = parse_manual_rules(manual_rules_df)
         if config["aplicar_reglas_manuales"]:
-            for idx, row in df.iterrows():
-                normalized = str(row["PLACA_NORMALIZADA"])
-                if normalized in correcciones_manual:
-                    df.at[idx, "PLACA_ACCION_FINAL"] = "corregir_manual"
-                    df.at[idx, "PLACA_FINAL_DECIDIDA"] = correcciones_manual[normalized]
-                    df.at[idx, "PLACA_AJUSTE_MANUAL"] = f"Correccion manual: {normalized} -> {correcciones_manual[normalized]}"
-                elif normalized in eliminar_manual:
-                    df.at[idx, "PLACA_ACCION_FINAL"] = "excluir_analisis_placa"
-                    df.at[idx, "PLACA_EXCLUIR_ANALISIS"] = True
-                    df.at[idx, "PLACA_AJUSTE_MANUAL"] = f"Eliminacion manual: {normalized}"
-                elif len(normalized) in longitudes_eliminar:
-                    df.at[idx, "PLACA_ACCION_FINAL"] = "excluir_analisis_placa"
-                    df.at[idx, "PLACA_EXCLUIR_ANALISIS"] = True
-                    df.at[idx, "PLACA_AJUSTE_MANUAL"] = f"Eliminacion manual por longitud {len(normalized)}"
+            df = apply_manual_rules_to_df(df, manual_rules_df)
         return {
             "df": df,
             "df_trabajo": df[~df["PLACA_EXCLUIR_ANALISIS"]].copy(),
@@ -1384,24 +1494,8 @@ def run_plate_cleaning(
         df.at[idx, "PLACA_FINAL_DECIDIDA"] = final_plate
         df.at[idx, "PLACA_EXCLUIR_ANALISIS"] = exclude_plate
 
-    correcciones_manual, eliminar_manual, longitudes_eliminar = parse_manual_rules(manual_rules_df)
     if config["aplicar_reglas_manuales"]:
-        for idx, row in df.iterrows():
-            normalized = str(row["PLACA_NORMALIZADA"])
-            if normalized in correcciones_manual:
-                target = correcciones_manual[normalized]
-                df.at[idx, "PLACA_ACCION_FINAL"] = "corregir_manual"
-                df.at[idx, "PLACA_FINAL_DECIDIDA"] = target
-                df.at[idx, "PLACA_EXCLUIR_ANALISIS"] = False
-                df.at[idx, "PLACA_AJUSTE_MANUAL"] = f"Correccion manual: {normalized} -> {target}"
-            elif normalized in eliminar_manual:
-                df.at[idx, "PLACA_ACCION_FINAL"] = "excluir_analisis_placa"
-                df.at[idx, "PLACA_EXCLUIR_ANALISIS"] = True
-                df.at[idx, "PLACA_AJUSTE_MANUAL"] = f"Eliminacion manual: {normalized}"
-            elif len(normalized) in longitudes_eliminar and not bool(df.at[idx, "PLACA_EXCLUIR_ANALISIS"]):
-                df.at[idx, "PLACA_ACCION_FINAL"] = "excluir_analisis_placa"
-                df.at[idx, "PLACA_EXCLUIR_ANALISIS"] = True
-                df.at[idx, "PLACA_AJUSTE_MANUAL"] = f"Eliminacion manual por longitud {len(normalized)}"
+        df = apply_manual_rules_to_df(df, manual_rules_df)
 
     df_eliminados = df[df["PLACA_EXCLUIR_ANALISIS"]].copy()
     df_trabajo = df[~df["PLACA_EXCLUIR_ANALISIS"]].copy()
