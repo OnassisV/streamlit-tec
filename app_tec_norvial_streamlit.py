@@ -35,7 +35,7 @@ from app_storage import build_storage_backend
 APP_TITLE = "Procesador TEC de Peajes"
 APP_NAV_KEY = "app_selected_page"
 TEC_RESULT_STATE_KEY = "tec_last_processing_result"
-PROCESSING_SIGNATURE_VERSION = "2026-03-20-v2"
+PROCESSING_SIGNATURE_VERSION = "2026-03-20-v3"
 CONTRACTOR_LOGO_PATH = Path(__file__).parent / "ChatGPT Image 18 mar 2026, 03_37_00 a.m..png"
 INFORME_TEMPLATE_CANDIDATES = (
     Path(__file__).parent / "templates" / "Informe TEC NORVIAL - 2022.docx",
@@ -2705,7 +2705,9 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
             [
                 (overview["flagged_plates"], "filas identificadas para revision de placa"),
                 (overview["corrected_plate_rows"], "filas con correccion de placa"),
+                (overview["fugas_fuertes"], "fugas fuertes por flujo"),
                 (overview["fugas_probables"], "fugas probables por flujo"),
+                (overview["fugas_no_concluyentes"], "incompletos no concluyentes"),
                 (overview["fragmentaciones_probables"], "fragmentaciones probables"),
                 (overview["fragmentaciones_alta_confianza"], "filas potencialmente unificables"),
                 (overview["caseta_change_groups"], "placas finales con cambio de caseta"),
@@ -2765,7 +2767,9 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
                 [
                     {"hallazgo": "fragmentaciones probables", "filas": overview["fragmentaciones_probables"]},
                     {"hallazgo": "alta confianza para unificar", "filas": overview["fragmentaciones_alta_confianza"]},
+                    {"hallazgo": "fugas fuertes por flujo", "filas": overview["fugas_fuertes"]},
                     {"hallazgo": "fugas probables por flujo", "filas": overview["fugas_probables"]},
+                    {"hallazgo": "incompletos no concluyentes", "filas": overview["fugas_no_concluyentes"]},
                 ]
             ),
             use_container_width=True,
@@ -4068,10 +4072,35 @@ def classify_fragment_similarity(plate_a: object, plate_b: object, delta_seg: fl
     return False, "baja"
 
 
+def classify_fuga_confidence(
+    score: int,
+    ubicacion: str,
+    base_type: str,
+    apariciones_contexto: int,
+    apariciones_totales: int,
+    eventos_patron_placa: int,
+) -> tuple[str, str]:
+    if ubicacion != "interior":
+        return "incompleto_no_concluyente_borde", "baja"
+    strong_recurrence = apariciones_contexto >= 2 or apariciones_totales >= 3 or eventos_patron_placa >= 2
+    if score >= 9 and strong_recurrence:
+        return f"fuga_fuerte_{base_type}", "alta"
+    if score >= 5:
+        return f"fuga_probable_{base_type}", "media"
+    return "incompleto_no_concluyente_interior", "baja"
+
+
+def build_fuga_detail(score: int, eventos_patron_placa: int, tasa_placa: float, tasa_contexto: float) -> str:
+    return (
+        f"score={score}; recurrencias_patron={eventos_patron_placa}; "
+        f"tasa_placa={tasa_placa:.2%}; tasa_contexto={tasa_contexto:.2%}"
+    )
+
+
 def detect_flow_fuga_candidates(time_result: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     df = time_result["df_tiempos_bordes"].copy()
     if df.empty:
-        empty_fugas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_FINAL", "TIPO_FUGA", "DETALLE"])
+        empty_fugas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_FINAL", "TIPO_FUGA", "NIVEL_CONFIANZA", "SCORE_FUGA", "EVENTOS_PATRON_PLACA", "TASA_ANOMALIA_PLACA", "TASA_ANOMALIA_CONTEXTO", "DETALLE"])
         empty_fragmentos = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_T1", "PLACA_T2T3", "DELTA_SEG", "CONFIANZA", "DETALLE"])
         return {"fugas_probables": empty_fugas, "fragmentaciones_probables": empty_fragmentos}
 
@@ -4084,8 +4113,27 @@ def detect_flow_fuga_candidates(time_result: dict[str, pd.DataFrame]) -> dict[st
         na_position="last",
     ).copy()
 
-    fugas_probables = []
+    fugas_candidatas = []
     fragmentaciones_probables = []
+
+    plate_context_counts = (
+        df.groupby(["PEAJE", "SENTIDO", "PLACA_FINAL"], dropna=False)
+        .size()
+        .rename("APARICIONES_PLACA_CONTEXTO")
+        .reset_index()
+    )
+    plate_total_counts = (
+        df.groupby(["PLACA_FINAL"], dropna=False)
+        .size()
+        .rename("APARICIONES_PLACA_TOTAL")
+        .reset_index()
+    )
+    context_totals = (
+        df.groupby(["PEAJE", "SENTIDO"], dropna=False)
+        .size()
+        .rename("TOTAL_CONTEXTO")
+        .reset_index()
+    )
 
     for keys, group in df.groupby(["PEAJE", "CASETA", "SENTIDO", "FECHA_DIA_DASH"], dropna=False):
         group = group.reset_index(drop=True)
@@ -4136,41 +4184,132 @@ def detect_flow_fuga_candidates(time_result: dict[str, pd.DataFrame]) -> dict[st
                         break
 
                 if not pair_found:
-                    tipo = "fuga_probable_no_inicia_caseta" if ubicacion == "interior" else "incompleto_de_borde"
-                    detalle = (
-                        "Vehiculo llega a cola pero no registra llegada ni salida de caseta dentro de un flujo activo."
-                        if ubicacion == "interior"
-                        else "Registro incompleto fuera de la ventana completa del flujo; no se clasifica como fuga fuerte."
-                    )
-                    fugas_probables.append(
+                    fugas_candidatas.append(
                         {
+                            "PEAJE_RAW": keys[0],
+                            "SENTIDO_RAW": keys[2],
                             "PEAJE": format_dashboard_dimension(keys[0]),
                             "CASETA": format_dashboard_dimension(keys[1]),
                             "SENTIDO": format_dashboard_dimension(keys[2]),
                             "FECHA": pd.to_datetime(keys[3]).strftime("%Y-%m-%d") if pd.notna(keys[3]) else "Sin fecha",
+                            "PLACA_FINAL_RAW": row.get("PLACA_FINAL"),
                             "PLACA_FINAL": format_dashboard_dimension(row.get("PLACA_FINAL")),
-                            "TIPO_FUGA": tipo,
-                            "DETALLE": detalle,
+                            "UBICACION": ubicacion,
+                            "BASE_TYPE": "no_inicia_caseta",
                         }
                     )
             elif tiene_t1 and tiene_t2 and (not tiene_t3):
-                fugas_probables.append(
+                fugas_candidatas.append(
                     {
+                        "PEAJE_RAW": keys[0],
+                        "SENTIDO_RAW": keys[2],
                         "PEAJE": format_dashboard_dimension(keys[0]),
                         "CASETA": format_dashboard_dimension(keys[1]),
                         "SENTIDO": format_dashboard_dimension(keys[2]),
                         "FECHA": pd.to_datetime(keys[3]).strftime("%Y-%m-%d") if pd.notna(keys[3]) else "Sin fecha",
+                        "PLACA_FINAL_RAW": row.get("PLACA_FINAL"),
                         "PLACA_FINAL": format_dashboard_dimension(row.get("PLACA_FINAL")),
-                        "TIPO_FUGA": "fuga_probable_no_finaliza_caseta",
-                        "DETALLE": "Vehiculo llega a cola e inicia caseta, pero no registra salida.",
+                        "UBICACION": ubicacion,
+                        "BASE_TYPE": "no_finaliza_caseta",
                     }
                 )
 
-    df_fugas = pd.DataFrame(fugas_probables)
+    df_fugas = pd.DataFrame(fugas_candidatas)
     if not df_fugas.empty:
-        df_fugas = df_fugas.sort_values(["TIPO_FUGA", "PEAJE", "CASETA", "FECHA", "PLACA_FINAL"]).reset_index(drop=True)
+        eventos_patron = (
+            df_fugas.groupby(["PEAJE_RAW", "SENTIDO_RAW", "PLACA_FINAL_RAW", "BASE_TYPE"], dropna=False)
+            .size()
+            .rename("EVENTOS_PATRON_PLACA")
+            .reset_index()
+        )
+        eventos_contexto = (
+            df_fugas.groupby(["PEAJE_RAW", "SENTIDO_RAW"], dropna=False)
+            .size()
+            .rename("EVENTOS_CONTEXTO")
+            .reset_index()
+        )
+        df_fugas = df_fugas.merge(plate_context_counts, left_on=["PEAJE_RAW", "SENTIDO_RAW", "PLACA_FINAL_RAW"], right_on=["PEAJE", "SENTIDO", "PLACA_FINAL"], how="left")
+        df_fugas = df_fugas.drop(columns=["PEAJE_y", "SENTIDO_y", "PLACA_FINAL_y"], errors="ignore").rename(columns={"PEAJE_x": "PEAJE", "SENTIDO_x": "SENTIDO", "PLACA_FINAL_x": "PLACA_FINAL"})
+        df_fugas = df_fugas.merge(plate_total_counts, left_on=["PLACA_FINAL_RAW"], right_on=["PLACA_FINAL"], how="left")
+        df_fugas = df_fugas.drop(columns=["PLACA_FINAL"], errors="ignore").rename(columns={"PLACA_FINAL_x": "PLACA_FINAL"}) if "PLACA_FINAL_x" in df_fugas.columns else df_fugas
+        df_fugas = df_fugas.merge(eventos_patron, on=["PEAJE_RAW", "SENTIDO_RAW", "PLACA_FINAL_RAW", "BASE_TYPE"], how="left")
+        df_fugas = df_fugas.merge(eventos_contexto, on=["PEAJE_RAW", "SENTIDO_RAW"], how="left")
+        df_fugas = df_fugas.merge(context_totals, left_on=["PEAJE_RAW", "SENTIDO_RAW"], right_on=["PEAJE", "SENTIDO"], how="left")
+        df_fugas = df_fugas.drop(columns=["PEAJE_y", "SENTIDO_y"], errors="ignore").rename(columns={"PEAJE_x": "PEAJE", "SENTIDO_x": "SENTIDO"})
+
+        for column in ["APARICIONES_PLACA_CONTEXTO", "APARICIONES_PLACA_TOTAL", "EVENTOS_PATRON_PLACA", "EVENTOS_CONTEXTO", "TOTAL_CONTEXTO"]:
+            df_fugas[column] = df_fugas[column].fillna(0).astype(int)
+
+        df_fugas["TASA_ANOMALIA_PLACA"] = df_fugas.apply(
+            lambda row: (row["EVENTOS_PATRON_PLACA"] / row["APARICIONES_PLACA_CONTEXTO"]) if row["APARICIONES_PLACA_CONTEXTO"] else 0.0,
+            axis=1,
+        )
+        df_fugas["TASA_ANOMALIA_CONTEXTO"] = df_fugas.apply(
+            lambda row: (row["EVENTOS_CONTEXTO"] / row["TOTAL_CONTEXTO"]) if row["TOTAL_CONTEXTO"] else 0.0,
+            axis=1,
+        )
+
+        def score_row(row: pd.Series) -> int:
+            score = 0
+            if row["UBICACION"] == "interior":
+                score += 3
+            else:
+                score -= 3
+            score += 2
+            if row["APARICIONES_PLACA_CONTEXTO"] >= 2:
+                score += 3
+            if row["APARICIONES_PLACA_TOTAL"] >= 3:
+                score += 2
+            if row["EVENTOS_PATRON_PLACA"] >= 2:
+                score += 3
+            if row["TASA_ANOMALIA_PLACA"] >= 0.4:
+                score += 2
+            if row["TASA_ANOMALIA_PLACA"] >= (2 * row["TASA_ANOMALIA_CONTEXTO"]):
+                score += 2
+            return score
+
+        df_fugas["SCORE_FUGA"] = df_fugas.apply(score_row, axis=1)
+        clasificaciones = df_fugas.apply(
+            lambda row: classify_fuga_confidence(
+                int(row["SCORE_FUGA"]),
+                str(row["UBICACION"]),
+                str(row["BASE_TYPE"]),
+                int(row["APARICIONES_PLACA_CONTEXTO"]),
+                int(row["APARICIONES_PLACA_TOTAL"]),
+                int(row["EVENTOS_PATRON_PLACA"]),
+            ),
+            axis=1,
+            result_type="expand",
+        )
+        clasificaciones.columns = ["TIPO_FUGA", "NIVEL_CONFIANZA"]
+        df_fugas[["TIPO_FUGA", "NIVEL_CONFIANZA"]] = clasificaciones
+        df_fugas["DETALLE"] = df_fugas.apply(
+            lambda row: build_fuga_detail(
+                int(row["SCORE_FUGA"]),
+                int(row["EVENTOS_PATRON_PLACA"]),
+                float(row["TASA_ANOMALIA_PLACA"]),
+                float(row["TASA_ANOMALIA_CONTEXTO"]),
+            ),
+            axis=1,
+        )
+        df_fugas = df_fugas[
+            [
+                "PEAJE",
+                "CASETA",
+                "SENTIDO",
+                "FECHA",
+                "PLACA_FINAL",
+                "TIPO_FUGA",
+                "NIVEL_CONFIANZA",
+                "SCORE_FUGA",
+                "EVENTOS_PATRON_PLACA",
+                "TASA_ANOMALIA_PLACA",
+                "TASA_ANOMALIA_CONTEXTO",
+                "DETALLE",
+            ]
+        ].sort_values(["TIPO_FUGA", "SCORE_FUGA", "PEAJE", "CASETA", "FECHA", "PLACA_FINAL"], ascending=[True, False, True, True, True, True]).reset_index(drop=True)
     else:
-        df_fugas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_FINAL", "TIPO_FUGA", "DETALLE"])
+        df_fugas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_FINAL", "TIPO_FUGA", "NIVEL_CONFIANZA", "SCORE_FUGA", "EVENTOS_PATRON_PLACA", "TASA_ANOMALIA_PLACA", "TASA_ANOMALIA_CONTEXTO", "DETALLE"])
 
     df_fragmentos = pd.DataFrame(fragmentaciones_probables)
     if not df_fragmentos.empty:
@@ -4357,7 +4496,9 @@ def build_processing_dashboard(df_std: pd.DataFrame, result: dict[str, object]) 
         "clean_sentidos": int(clean_df["SENTIDO"].nunique(dropna=False)),
         "fugas_rows": len(fugas_df),
         "fugas_unique": int(fugas_df["PLACA_NORMALIZADA"].nunique()) if not fugas_df.empty else 0,
-        "fugas_probables": len(fugas_probables_df),
+        "fugas_fuertes": int(fugas_probables_df["TIPO_FUGA"].astype(str).str.startswith("fuga_fuerte_").sum()) if not fugas_probables_df.empty else 0,
+        "fugas_probables": int(fugas_probables_df["TIPO_FUGA"].astype(str).str.startswith("fuga_probable_").sum()) if not fugas_probables_df.empty else 0,
+        "fugas_no_concluyentes": int(fugas_probables_df["TIPO_FUGA"].astype(str).str.startswith("incompleto_no_concluyente").sum()) if not fugas_probables_df.empty else 0,
         "fragmentaciones_probables": len(fragmentaciones_df),
         "fragmentaciones_alta_confianza": int(fragmentaciones_df["CONFIANZA"].eq("alta").sum()) if not fragmentaciones_df.empty else 0,
         "flagged_plates": len(export_tables["revision_placas"]),
@@ -4387,7 +4528,9 @@ def build_fugas_report_sheets(dashboard: dict[str, object]) -> dict[str, pd.Data
         [
             {"indicador": "filas_patron_x_longitud", "valor": overview["fugas_rows"]},
             {"indicador": "placas_patron_x_unicas", "valor": overview["fugas_unique"]},
+            {"indicador": "fugas_fuertes_flujo", "valor": overview["fugas_fuertes"]},
             {"indicador": "fugas_probables_flujo", "valor": overview["fugas_probables"]},
+            {"indicador": "incompletos_no_concluyentes", "valor": overview["fugas_no_concluyentes"]},
             {"indicador": "fragmentaciones_probables", "valor": overview["fragmentaciones_probables"]},
             {"indicador": "fragmentaciones_alta_confianza", "valor": overview["fragmentaciones_alta_confianza"]},
             {"indicador": "placas_con_cambio_caseta", "valor": overview["caseta_change_groups"]},
