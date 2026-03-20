@@ -811,7 +811,6 @@ def get_requested_page() -> str | None:
 
 def render_home_page(current_user: dict | None) -> None:
     user_label = current_user["full_name"] if current_user else "Equipo CIDATT"
-    role_label = current_user["role_label"] if current_user else "Acceso directo"
     st.markdown(
         build_hero_panel(
             title="Centro de control operativo y analitico",
@@ -820,11 +819,6 @@ def render_home_page(current_user: dict | None) -> None:
                 "clara y lista para crecer. Desde aqui entras a TEC y a los espacios que luego completaremos."
             ),
             kicker="Suite Operativa",
-            metrics=[
-                (str(len(MODULE_CATALOG)), "modulos visibles"),
-                ("1", "modulo ya operativo"),
-                (role_label, "perfil activo"),
-            ],
         ),
         unsafe_allow_html=True,
     )
@@ -3840,6 +3834,8 @@ def build_complementary_package(
         cumplimiento_3min_peaje[["tec_promedio_min", "tec_p95_min", "tec_max_min"]] = cumplimiento_3min_peaje[
             ["tec_promedio_min", "tec_p95_min", "tec_max_min"]
         ].round(2)
+        cumplimiento_3min_peaje["PEAJE"] = cumplimiento_3min_peaje["PEAJE"].map(format_dashboard_dimension)
+        cumplimiento_3min_peaje["SENTIDO"] = cumplimiento_3min_peaje["SENTIDO"].map(format_dashboard_dimension)
         cumplimiento_3min_peaje = cumplimiento_3min_peaje.merge(
             fugas_por_peaje[["PEAJE", "FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]],
             on=["PEAJE"],
@@ -3867,6 +3863,9 @@ def build_complementary_package(
         cumplimiento_3min_caseta[["tec_promedio_min", "tec_p95_min", "tec_max_min"]] = cumplimiento_3min_caseta[
             ["tec_promedio_min", "tec_p95_min", "tec_max_min"]
         ].round(2)
+        cumplimiento_3min_caseta["PEAJE"] = cumplimiento_3min_caseta["PEAJE"].map(format_dashboard_dimension)
+        cumplimiento_3min_caseta["CASETA"] = cumplimiento_3min_caseta["CASETA"].map(format_dashboard_dimension)
+        cumplimiento_3min_caseta["SENTIDO"] = cumplimiento_3min_caseta["SENTIDO"].map(format_dashboard_dimension)
         cumplimiento_3min_caseta = cumplimiento_3min_caseta.merge(
             fugas_por_caseta[["PEAJE", "CASETA", "SENTIDO", "FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]],
             on=["PEAJE", "CASETA", "SENTIDO"],
