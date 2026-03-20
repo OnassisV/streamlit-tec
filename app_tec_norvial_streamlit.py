@@ -2636,6 +2636,7 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
     overview = dashboard["overview"]
     raw_tables = dashboard["raw_tables"]
     clean_tables = dashboard["clean_tables"]
+    queue_theory = dashboard["queue_theory"]
     fugas_patron_detalle = dashboard["fugas_patron_detalle"]
     fugas_probables_detalle = dashboard["fugas_probables_detalle"]
     fragmentaciones_detalle = dashboard["fragmentaciones_detalle"]
@@ -2649,6 +2650,7 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
         '<div class="section-copy">El tablero resume la base original, las fugas detectadas, el trabajo de limpieza realizado y el estado final de la base limpia.</div>',
         unsafe_allow_html=True,
     )
+    st.markdown(build_processing_flow_diagram_html(), unsafe_allow_html=True)
 
     st.markdown('<div class="section-heading">1. Estado de la base original</div>', unsafe_allow_html=True)
     st.markdown(
@@ -2682,24 +2684,13 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
 
     st.markdown('<div class="section-heading">2. Hallazgos y valor del procesamiento</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="section-copy">Aqui se concentra la evidencia del trabajo del pipeline: deteccion de fugas, correcciones de placa, cambios de caseta y recuperaciones de tiempo.</div>',
+        '<div class="section-copy">Aqui se concentra la evidencia del trabajo del pipeline: deteccion de fugas, correcciones de placa, cambios de caseta y recuperaciones de tiempo. La lectura operativa sigue una jerarquia: fuga fuerte por flujo, fuga probable por flujo e incompleto no concluyente.</div>',
         unsafe_allow_html=True,
     )
-    export_col1, export_col2 = st.columns([1.4, 1])
-    with export_col1:
-        st.markdown(
-            '<div class="section-copy">El reporte consolida fugas por patron, fugas probables por flujo, fragmentaciones con confianza y placas con cambio de caseta.</div>',
-            unsafe_allow_html=True,
-        )
-    with export_col2:
-        st.download_button(
-            "Descargar reporte de fugas",
-            data=fugas_report_bytes,
-            file_name=f"reporte_fugas_{Path(source_name).stem}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="download_fugas_report",
-        )
+    st.markdown(
+        '<div class="section-copy">El reporte consolida fugas por patron, fugas por flujo con nivel de confianza, fragmentaciones con confianza y placas con cambio de caseta. Fuga fuerte implica mejor soporte contextual; fuga probable sigue siendo alerta analitica; incompleto no concluyente no debe interpretarse como fuga confirmada.</div>',
+        unsafe_allow_html=True,
+    )
     st.markdown(
         build_dashboard_metric_items(
             [
@@ -2744,10 +2735,13 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
         st.dataframe(caseta_changes.head(20), use_container_width=True, hide_index=True)
     fuga_col1, fuga_col2 = st.columns(2)
     with fuga_col1:
-        st.markdown('<div class="section-copy">Fugas probables por flujo activo: llega a cola y no registra caseta/salida dentro de la ventana operativa.</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-copy">Jerarquia de fugas por flujo: fuga fuerte cuando hay mejor soporte contextual y recurrencia util; fuga probable cuando la evidencia es intermedia; incompleto no concluyente cuando el caso no debe leerse como fuga confirmada. En esta tabla conviven las tres etiquetas con su nivel de confianza y score.</div>',
+            unsafe_allow_html=True,
+        )
         st.dataframe(fugas_probables_detalle.head(20), use_container_width=True, hide_index=True)
     with fuga_col2:
-        st.markdown('<div class="section-copy">Fragmentaciones probables: una fila trae cola y otra cercana trae caseta/salida con placa muy similar.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-copy">Fragmentaciones probables: una fila trae cola y otra cercana trae caseta/salida con placa muy similar. Esta categoria compite contra fuga y ayuda a no sobredeclarar evasiones cuando la mejor explicacion es un registro partido.</div>', unsafe_allow_html=True)
         st.dataframe(fragmentaciones_detalle.head(20), use_container_width=True, hide_index=True)
     summary_col1, summary_col2 = st.columns(2)
     with summary_col1:
@@ -2761,7 +2755,7 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
         st.markdown('<div class="section-copy">Resumen cuantitativo de acciones de tiempo</div>', unsafe_allow_html=True)
         st.dataframe(time_actions[["ACCION_UI", "FILAS"]], use_container_width=True, hide_index=True)
     with summary_col4:
-        st.markdown('<div class="section-copy">Lectura operativa de la unificacion potencial</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-copy">Lectura operativa consolidada: primero se revisan fragmentaciones, luego fugas fuertes, despues fugas probables y finalmente incompletos no concluyentes.</div>', unsafe_allow_html=True)
         st.dataframe(
             pd.DataFrame(
                 [
@@ -2805,6 +2799,41 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
     with clean_col4:
         st.markdown('<div class="section-copy">Top operativo de casetas en la base limpia</div>', unsafe_allow_html=True)
         st.dataframe(clean_tables["por_caseta"][["PEAJE", "CASETA", "SENTIDO", "REGISTROS", "PARTICIPACION_%"]].head(12), use_container_width=True, hide_index=True)
+
+    st.markdown('<div class="section-heading">4. Resultados del analisis de teoria de colas</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-copy">Este bloque resume lo que dice la base limpia sobre tiempos de espera y tamano de cola real. Se calcula solo con registros que terminan con tiempos completos, para comparar de forma estable el comportamiento global, por peaje y por caseta.</div>',
+        unsafe_allow_html=True,
+    )
+    if queue_theory["general_insights"].empty:
+        st.info("No hay suficientes registros con tiempos completos para resumir teoria de colas en el dashboard.")
+    else:
+        st.markdown(build_dashboard_metric_items(queue_theory["general_cards"]), unsafe_allow_html=True)
+        queue_col1, queue_col2 = st.columns([0.96, 1.04])
+        with queue_col1:
+            st.markdown('<div class="section-copy">Lectura general de teoria de colas</div>', unsafe_allow_html=True)
+            st.dataframe(queue_theory["general_insights"], use_container_width=True, hide_index=True)
+        with queue_col2:
+            st.markdown('<div class="section-copy">Peajes mas exigidos segun TEC promedio y cola maxima</div>', unsafe_allow_html=True)
+            st.dataframe(queue_theory["top_peajes"], use_container_width=True, hide_index=True)
+        st.markdown('<div class="section-copy">Resultados consolidados por peaje</div>', unsafe_allow_html=True)
+        st.dataframe(queue_theory["by_peaje"], use_container_width=True, hide_index=True)
+        st.markdown('<div class="section-copy">Resultados consolidados por caseta</div>', unsafe_allow_html=True)
+        st.dataframe(queue_theory["by_caseta"], use_container_width=True, hide_index=True)
+
+    st.markdown('<div class="section-heading">5. Descargas disponibles</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-copy">Descarga el reporte complementario de fugas despues de revisar el tablero y los resultados de colas.</div>',
+        unsafe_allow_html=True,
+    )
+    st.download_button(
+        "Descargar reporte de fugas",
+        data=fugas_report_bytes,
+        file_name=f"reporte_fugas_{Path(source_name).stem}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key="download_fugas_report",
+    )
 
 
 def render_processing_outputs(processed_payload: dict[str, object], storage_backend, can_view_history: bool) -> None:
@@ -4358,6 +4387,210 @@ def build_dashboard_metric_items(items: list[tuple[object, str]]) -> str:
     return f'<div class="metrics-strip">{"".join(cards)}</div>'
 
 
+def build_processing_flow_diagram_html() -> str:
+    steps = [
+        ("1. Recibir el archivo", "Tomamos la hoja elegida y verificamos que la base tenga la informacion minima para empezar."),
+        ("2. Ordenar columnas", "Acomodamos nombres, formatos y posiciones para que todas las reglas trabajen sobre la misma estructura."),
+        ("3. Marcar el orden real", "Guardamos el orden original de las filas para no perder la historia del archivo mientras se procesa."),
+        ("4. Normalizar placas", "Quitamos ruido visual de las placas y armamos una version comparable para detectar errores o parecidos."),
+        ("5. Aplicar reglas manuales", "Si existe una excepcion conocida, la usamos aqui para no mezclar casos de prueba con casos reales."),
+        ("6. Separar placas observadas", "Las placas que no se pueden corregir con seguridad no se fuerzan: se dejan marcadas para revision."),
+        ("7. Preparar tiempos", "Convertimos llegadas y salidas en tiempos comparables para revisar cola, caseta y salida sin ambiguedades."),
+        ("8. Detectar bordes", "Identificamos registros en los extremos del periodo porque suelen tener tiempos incompletos o contexto parcial."),
+        ("9. Recuperar faltantes", "Intentamos completar tiempos con interpolacion, medianas locales y referencias de filas parecidas."),
+        ("10. Pedir ayuda a donantes", "Cuando una fila esta muy incompleta, usamos patrones validos del mismo peaje, sentido o caseta para proponer horas."),
+        ("11. Corregir inversiones", "Si el orden de cola, caseta y salida queda cruzado por pocos segundos, lo reajustamos con reglas cortas y controladas."),
+        ("12. Unir duplicados cercanos", "Si dos filas parecen ser el mismo vehiculo separado por muy poco tiempo, consolidamos la historia para no contar doble."),
+        ("13. Distinguir fuga o fragmentacion", "Comparamos si el caso se parece mas a una fuga real o a un registro partido antes de etiquetarlo."),
+        ("14. Medir fuerza del hallazgo", "No todos los casos valen lo mismo: algunos quedan como fuga fuerte, otros como probable y otros como no concluyentes."),
+        ("15. Separar salidas", "Con todo revisado, armamos base limpia, eliminados, pendientes y tablas de soporte para auditoria."),
+        ("16. Mostrar resultados", "Al final resumimos volumen, hallazgos, teoria de colas y descargas en un tablero que se pueda explicar facil."),
+    ]
+    cards = []
+    for title, copy in steps:
+        cards.append(
+            '<div style="flex:1 1 220px; min-width:220px; border:1px solid rgba(15,61,145,0.12); '
+            'background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(240,246,255,0.98)); '
+            'border-radius:20px; padding:1rem 1rem 0.9rem; box-shadow:0 10px 24px rgba(12,41,90,0.08);">'
+            f'<div style="font-size:1rem; font-weight:700; color:#163564; margin-bottom:0.45rem;">{title}</div>'
+            f'<div style="font-size:0.92rem; line-height:1.6; color:#4d6587;">{copy}</div>'
+            '</div>'
+        )
+    return (
+        '<div style="border:1px solid rgba(15,61,145,0.12); border-radius:26px; '
+        'background:linear-gradient(180deg, rgba(255,255,255,0.96), rgba(235,243,255,0.92)); '
+        'padding:1.1rem 1.1rem 1.2rem; margin:0.75rem 0 1.15rem;">'
+        '<div style="font-size:0.74rem; letter-spacing:0.12em; text-transform:uppercase; font-weight:700; color:#2f6ddc; margin-bottom:0.45rem;">Mapa Del Procedimiento</div>'
+        '<div style="font-size:1.18rem; font-weight:700; color:#163564; margin-bottom:0.35rem;">Como trabaja este analisis, paso por paso</div>'
+        '<div style="font-size:0.95rem; line-height:1.7; color:#4d6587; margin-bottom:0.9rem;">Piensalo como una revision ordenada: primero acomodamos la base, despues intentamos mejorarla y al final decidimos que casos son fuertes, cuales son solo alerta y cuales todavia necesitan cuidado.</div>'
+        '<div style="display:flex; flex-wrap:wrap; gap:0.85rem; align-items:stretch;">'
+        + "".join(cards)
+        + '</div></div>'
+    )
+
+
+def build_queue_theory_dashboard(df_resultados: pd.DataFrame) -> dict[str, object]:
+    by_peaje_columns = [
+        "PEAJE",
+        "VEHICULOS",
+        "CASETAS",
+        "SENTIDOS",
+        "TEC_PROMEDIO_MIN",
+        "TEC_P95_MIN",
+        "TEC_MAX_MIN",
+        "COLA_PROMEDIO_USU",
+        "COLA_P95_USU",
+        "COLA_MAX_USU",
+        "ATENCION_<=3_MIN_%",
+    ]
+    by_caseta_columns = [
+        "PEAJE",
+        "CASETA",
+        "SENTIDO",
+        "VEHICULOS",
+        "TEC_PROMEDIO_MIN",
+        "TEC_P95_MIN",
+        "TEC_MAX_MIN",
+        "COLA_PROMEDIO_USU",
+        "COLA_P95_USU",
+        "COLA_MAX_USU",
+        "ATENCION_<=3_MIN_%",
+    ]
+    if df_resultados.empty:
+        return {
+            "general_cards": [
+                (0, "vehiculos evaluados"),
+                (0, "peajes evaluados"),
+                (0, "casetas evaluadas"),
+                ("0.00", "TEC promedio global (min)"),
+                ("0.00", "TEC p95 global (min)"),
+                ("0.00", "cola promedio (usuarios)"),
+                ("0.00", "cola p95 (usuarios)"),
+                (0, "cola maxima real"),
+                ("0.00%", "atencion <= 3 min"),
+            ],
+            "general_insights": pd.DataFrame(columns=["resultado", "valor"]),
+            "top_peajes": pd.DataFrame(columns=by_peaje_columns),
+            "by_peaje": pd.DataFrame(columns=by_peaje_columns),
+            "by_caseta": pd.DataFrame(columns=by_caseta_columns),
+        }
+
+    df_queue = df_resultados.copy()
+    df_queue["PEAJE"] = df_queue["PEAJE"].map(format_dashboard_dimension)
+    df_queue["CASETA"] = df_queue["CASETA"].map(format_dashboard_dimension)
+    df_queue["SENTIDO"] = df_queue["SENTIDO"].map(format_dashboard_dimension)
+
+    overall_pct_3 = round(100 * (df_queue["T_TEC_FINAL_MINUTOS"] <= 3).mean(), 2) if len(df_queue) else 0.0
+    general_cards = [
+        (len(df_queue), "vehiculos evaluados"),
+        (int(df_queue["PEAJE"].nunique(dropna=False)), "peajes evaluados"),
+        (int(df_queue[["PEAJE", "CASETA", "SENTIDO"]].drop_duplicates().shape[0]), "casetas evaluadas"),
+        (f"{df_queue['T_TEC_FINAL_MINUTOS'].mean():.2f}", "TEC promedio global (min)"),
+        (f"{q95(df_queue['T_TEC_FINAL_MINUTOS']):.2f}", "TEC p95 global (min)"),
+        (f"{df_queue['COLA_ESPERA_USUARIOS'].mean():.2f}", "cola promedio (usuarios)"),
+        (f"{q95(df_queue['COLA_ESPERA_USUARIOS']):.2f}", "cola p95 (usuarios)"),
+        (int(df_queue["COLA_ESPERA_USUARIOS"].max()), "cola maxima real"),
+        (f"{overall_pct_3:.2f}%", "atencion <= 3 min"),
+    ]
+
+    by_peaje = (
+        df_queue.groupby(["PEAJE"], dropna=False)
+        .agg(
+            VEHICULOS=("PLACA_FINAL", "size"),
+            CASETAS=("CASETA", pd.Series.nunique),
+            SENTIDOS=("SENTIDO", pd.Series.nunique),
+            TEC_PROMEDIO_MIN=("T_TEC_FINAL_MINUTOS", "mean"),
+            TEC_P95_MIN=("T_TEC_FINAL_MINUTOS", q95),
+            TEC_MAX_MIN=("T_TEC_FINAL_MINUTOS", "max"),
+            COLA_PROMEDIO_USU=("COLA_ESPERA_USUARIOS", "mean"),
+            COLA_P95_USU=("COLA_ESPERA_USUARIOS", q95),
+            COLA_MAX_USU=("COLA_ESPERA_USUARIOS", "max"),
+            DENTRO_3_MIN=("T_TEC_FINAL_MINUTOS", lambda s: int((s <= 3).sum())),
+        )
+        .reset_index()
+    )
+    by_peaje["ATENCION_<=3_MIN_%"] = (100 * by_peaje["DENTRO_3_MIN"] / by_peaje["VEHICULOS"]).round(2)
+    by_peaje = by_peaje.drop(columns=["DENTRO_3_MIN"])
+    by_peaje[[
+        "TEC_PROMEDIO_MIN",
+        "TEC_P95_MIN",
+        "TEC_MAX_MIN",
+        "COLA_PROMEDIO_USU",
+        "COLA_P95_USU",
+    ]] = by_peaje[[
+        "TEC_PROMEDIO_MIN",
+        "TEC_P95_MIN",
+        "TEC_MAX_MIN",
+        "COLA_PROMEDIO_USU",
+        "COLA_P95_USU",
+    ]].round(2)
+    by_peaje = by_peaje.sort_values(["TEC_PROMEDIO_MIN", "COLA_MAX_USU", "VEHICULOS"], ascending=[False, False, False]).reset_index(drop=True)
+
+    by_caseta = (
+        df_queue.groupby(["PEAJE", "CASETA", "SENTIDO"], dropna=False)
+        .agg(
+            VEHICULOS=("PLACA_FINAL", "size"),
+            TEC_PROMEDIO_MIN=("T_TEC_FINAL_MINUTOS", "mean"),
+            TEC_P95_MIN=("T_TEC_FINAL_MINUTOS", q95),
+            TEC_MAX_MIN=("T_TEC_FINAL_MINUTOS", "max"),
+            COLA_PROMEDIO_USU=("COLA_ESPERA_USUARIOS", "mean"),
+            COLA_P95_USU=("COLA_ESPERA_USUARIOS", q95),
+            COLA_MAX_USU=("COLA_ESPERA_USUARIOS", "max"),
+            DENTRO_3_MIN=("T_TEC_FINAL_MINUTOS", lambda s: int((s <= 3).sum())),
+        )
+        .reset_index()
+    )
+    by_caseta["ATENCION_<=3_MIN_%"] = (100 * by_caseta["DENTRO_3_MIN"] / by_caseta["VEHICULOS"]).round(2)
+    by_caseta = by_caseta.drop(columns=["DENTRO_3_MIN"])
+    by_caseta[[
+        "TEC_PROMEDIO_MIN",
+        "TEC_P95_MIN",
+        "TEC_MAX_MIN",
+        "COLA_PROMEDIO_USU",
+        "COLA_P95_USU",
+    ]] = by_caseta[[
+        "TEC_PROMEDIO_MIN",
+        "TEC_P95_MIN",
+        "TEC_MAX_MIN",
+        "COLA_PROMEDIO_USU",
+        "COLA_P95_USU",
+    ]].round(2)
+    by_caseta = by_caseta.sort_values(["TEC_PROMEDIO_MIN", "COLA_MAX_USU", "VEHICULOS"], ascending=[False, False, False]).reset_index(drop=True)
+
+    top_peaje = by_peaje.iloc[0]
+    top_caseta = by_caseta.iloc[0]
+    worst_compliance_peaje = by_peaje.sort_values(["ATENCION_<=3_MIN_%", "TEC_PROMEDIO_MIN"], ascending=[True, False]).iloc[0]
+    highest_queue_caseta = by_caseta.sort_values(["COLA_MAX_USU", "TEC_PROMEDIO_MIN"], ascending=[False, False]).iloc[0]
+    general_insights = pd.DataFrame(
+        [
+            {
+                "resultado": "Mayor TEC promedio por peaje",
+                "valor": f"{top_peaje['PEAJE']} con {top_peaje['TEC_PROMEDIO_MIN']:.2f} min y cola maxima de {int(top_peaje['COLA_MAX_USU'])} usuarios.",
+            },
+            {
+                "resultado": "Caseta mas exigida",
+                "valor": f"{top_caseta['PEAJE']} | C{top_caseta['CASETA']} | {top_caseta['SENTIDO']} con TEC promedio de {top_caseta['TEC_PROMEDIO_MIN']:.2f} min.",
+            },
+            {
+                "resultado": "Peaje con menor cumplimiento <= 3 min",
+                "valor": f"{worst_compliance_peaje['PEAJE']} con {worst_compliance_peaje['ATENCION_<=3_MIN_%']:.2f}% dentro del umbral.",
+            },
+            {
+                "resultado": "Mayor cola real observada",
+                "valor": f"{highest_queue_caseta['PEAJE']} | C{highest_queue_caseta['CASETA']} | {highest_queue_caseta['SENTIDO']} con {int(highest_queue_caseta['COLA_MAX_USU'])} usuarios.",
+            },
+        ]
+    )
+
+    return {
+        "general_cards": general_cards,
+        "general_insights": general_insights,
+        "top_peajes": by_peaje.head(8)[by_peaje_columns],
+        "by_peaje": by_peaje[by_peaje_columns],
+        "by_caseta": by_caseta[by_caseta_columns],
+    }
+
+
 def plot_volume_by_peaje(df_chart: pd.DataFrame, title: str, color: str) -> plt.Figure | None:
     if df_chart.empty:
         return None
@@ -4442,6 +4675,7 @@ def build_processing_dashboard(df_std: pd.DataFrame, result: dict[str, object]) 
     export_tables = result["export_tables"]
     plate_df = result["plate_result"]["df"].copy()
     time_final = result["time_result"]["df_tiempos_final"].copy()
+    df_resultados_queue = result["informe_package"]["df_resultados"].copy()
     raw_df = prepare_dashboard_dataframe(df_std)
     clean_df = prepare_dashboard_dataframe(export_tables["base_limpia"])
     fugas_df = detect_raw_fugas(df_std)
@@ -4512,6 +4746,7 @@ def build_processing_dashboard(df_std: pd.DataFrame, result: dict[str, object]) 
         "overview": overview,
         "raw_tables": build_volume_tables(raw_df),
         "clean_tables": build_volume_tables(clean_df),
+        "queue_theory": build_queue_theory_dashboard(df_resultados_queue),
         "fugas_patron_detalle": fugas_df,
         "fugas_probables_detalle": fugas_probables_df,
         "fragmentaciones_detalle": fragmentaciones_df,
