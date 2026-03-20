@@ -35,7 +35,7 @@ from app_storage import build_storage_backend
 APP_TITLE = "Procesador TEC de Peajes"
 APP_NAV_KEY = "app_selected_page"
 TEC_RESULT_STATE_KEY = "tec_last_processing_result"
-PROCESSING_SIGNATURE_VERSION = "2026-03-20-v1"
+PROCESSING_SIGNATURE_VERSION = "2026-03-20-v2"
 CONTRACTOR_LOGO_PATH = Path(__file__).parent / "ChatGPT Image 18 mar 2026, 03_37_00 a.m..png"
 INFORME_TEMPLATE_CANDIDATES = (
     Path(__file__).parent / "templates" / "Informe TEC NORVIAL - 2022.docx",
@@ -1936,11 +1936,10 @@ def run_time_cleaning(df_trabajo: pd.DataFrame, config: dict) -> dict[str, pd.Da
         df_tiempos_bordes["BORDE_ES_INICIO"] = False
         df_tiempos_bordes["BORDE_ES_CIERRE"] = False
 
-    df_tiempos_bordes["PENDIENTE_TIEMPOS_INTERNO"] = (
-        ~df_tiempos_bordes["TIEMPOS_COMPLETOS"] & ~df_tiempos_bordes["BORDE_CASETA_ELIMINAR"]
-    )
-    df_tiempos_eliminados_borde = df_tiempos_bordes[df_tiempos_bordes["BORDE_CASETA_ELIMINAR"]].copy()
-    df_tiempos_trabajo = df_tiempos_bordes[~df_tiempos_bordes["BORDE_CASETA_ELIMINAR"]].copy()
+    # Los registros de borde se mantienen temporalmente en juego para darles una ultima oportunidad
+    # de recuperacion antes de excluirlos definitivamente.
+    df_tiempos_bordes["PENDIENTE_TIEMPOS_INTERNO"] = ~df_tiempos_bordes["TIEMPOS_COMPLETOS"]
+    df_tiempos_trabajo = df_tiempos_bordes.copy()
 
     grupos_interpolados = [
         interpolar_tiempos_grupo(sub_df)
@@ -2152,14 +2151,12 @@ def run_time_cleaning(df_trabajo: pd.DataFrame, config: dict) -> dict[str, pd.Da
     df_3ra = pd.concat([df_3ra, df_3ra.apply(elegir_donante_cola, axis=1)], axis=1)
     objetivo_t1_donante = (
         config["aplicar_donantes"]
-        & (df_3ra["TIEMPO_MOTIVO_FINAL"] == "flujo_sin_referencia_completa")
         & df_3ra["T1_FINAL_2DA"].isna()
         & df_3ra["T2_FINAL_2DA"].notna()
         & df_3ra["T3_FINAL_2DA"].notna()
     )
     objetivo_t2_t3_donante = (
         config["aplicar_donantes"]
-        & (df_3ra["TIEMPO_MOTIVO_FINAL"] == "flujo_sin_referencia_completa")
         & df_3ra["T1_FINAL_2DA"].notna()
         & df_3ra["T2_FINAL_2DA"].isna()
         & df_3ra["T3_FINAL_2DA"].isna()
@@ -2174,12 +2171,7 @@ def run_time_cleaning(df_trabajo: pd.DataFrame, config: dict) -> dict[str, pd.Da
 
     def proponer_t2_t3_con_donantes(row: pd.Series) -> pd.Series:
         resultado = {"T2_DONANTE_PROPUESTO": pd.NaT, "T3_DONANTE_PROPUESTO": pd.NaT, "RECUPERABLE_T2_T3": False}
-        if not (
-            row["TIEMPO_MOTIVO_FINAL"] == "flujo_sin_referencia_completa"
-            and pd.notna(row["T1_FINAL_2DA"])
-            and pd.isna(row["T2_FINAL_2DA"])
-            and pd.isna(row["T3_FINAL_2DA"])
-        ):
+        if not (pd.notna(row["T1_FINAL_2DA"]) and pd.isna(row["T2_FINAL_2DA"]) and pd.isna(row["T3_FINAL_2DA"])):
             return pd.Series(resultado)
         if pd.notna(row["COLA_DONANTE_ELEGIDA"]) and pd.notna(row["CASETA_DONANTE_ELEGIDA"]):
             t2 = row["T1_FINAL_2DA"] + row["COLA_DONANTE_ELEGIDA"]
@@ -2240,6 +2232,9 @@ def run_time_cleaning(df_trabajo: pd.DataFrame, config: dict) -> dict[str, pd.Da
     df_final = consolidate_post_time_rows(df_final, DEDUPLICACION_DUPLICADO_CERCANO_SEGUNDOS)
     df_final = apply_short_complete_time_swaps(df_final, config)
 
+    mascara_eliminacion_borde_final = df_final["BORDE_CASETA_ELIMINAR"] & ~df_final["TIEMPOS_COMPLETOS_CIERRE"]
+    df_tiempos_eliminados_borde = df_final[mascara_eliminacion_borde_final].copy()
+    df_final = df_final[~mascara_eliminacion_borde_final].copy()
     df_pendientes = df_final[~df_final["TIEMPOS_COMPLETOS_CIERRE"]].copy()
     resumen_tiempos = (
         df_final["TIEMPO_ACCION_CIERRE"].value_counts(dropna=False).rename_axis("TIEMPO_ACCION_CIERRE").to_frame("filas")
