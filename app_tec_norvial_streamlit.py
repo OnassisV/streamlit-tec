@@ -2437,14 +2437,16 @@ def build_export_tables(
         "T. TEC",
         "T. CASETA",
     ]
-    casos_eliminados = pd.concat(
-        [
-            eliminados_placa.reindex(columns=columnas_eliminados),
-            eliminados_tiempo.reindex(columns=columnas_eliminados),
-            casos_excluidos_contraste.reindex(columns=columnas_eliminados),
-        ],
-        ignore_index=True,
-    )
+    frames_eliminados = [
+        eliminados_placa.reindex(columns=columnas_eliminados),
+        eliminados_tiempo.reindex(columns=columnas_eliminados),
+        casos_excluidos_contraste.reindex(columns=columnas_eliminados),
+    ]
+    frames_eliminados = [frame for frame in frames_eliminados if not frame.empty]
+    if frames_eliminados:
+        casos_eliminados = pd.concat(frames_eliminados, ignore_index=True)
+    else:
+        casos_eliminados = pd.DataFrame(columns=columnas_eliminados)
 
     casos_pendientes = pd.DataFrame()
     if not df_tiempos_pendientes.empty:
