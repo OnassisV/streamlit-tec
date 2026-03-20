@@ -16,6 +16,8 @@ from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.shared import Inches
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from PIL import Image, ImageChops
 from streamlit.errors import StreamlitSecretNotFoundError
 
@@ -33,7 +35,7 @@ from app_storage import build_storage_backend
 APP_TITLE = "Procesador TEC de Peajes"
 APP_NAV_KEY = "app_selected_page"
 TEC_RESULT_STATE_KEY = "tec_last_processing_result"
-PROCESSING_SIGNATURE_VERSION = "2026-03-19-v2"
+PROCESSING_SIGNATURE_VERSION = "2026-03-20-v1"
 CONTRACTOR_LOGO_PATH = Path(__file__).parent / "ChatGPT Image 18 mar 2026, 03_37_00 a.m..png"
 INFORME_TEMPLATE_CANDIDATES = (
     Path(__file__).parent / "templates" / "Informe TEC NORVIAL - 2022.docx",
@@ -2623,17 +2625,193 @@ def build_processing_artifacts(
     result: dict[str, object],
 ) -> dict[str, object]:
     export_tables = result["export_tables"]
+    dashboard = build_processing_dashboard(result["input_df"], result)
     return {
         "input_signature": processing_signature,
         "source_name": uploaded_name,
         "selected_sheet": selected_sheet,
         "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "export_tables": export_tables,
+        "dashboard": dashboard,
+        "fugas_report_bytes": to_excel_bytes(build_fugas_report_sheets(dashboard)),
     }
+
+
+def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes: bytes, source_name: str) -> None:
+    overview = dashboard["overview"]
+    raw_tables = dashboard["raw_tables"]
+    clean_tables = dashboard["clean_tables"]
+    fugas_patron_detalle = dashboard["fugas_patron_detalle"]
+    fugas_probables_detalle = dashboard["fugas_probables_detalle"]
+    fragmentaciones_detalle = dashboard["fragmentaciones_detalle"]
+    fragmentaciones_confianza = dashboard["fragmentaciones_confianza"]
+    plate_actions = dashboard["plate_actions"]
+    time_actions = dashboard["time_actions"]
+    caseta_changes = dashboard["caseta_changes"]
+
+    st.markdown('<div class="section-heading">Lectura ejecutiva del procesamiento</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-copy">El tablero resume la base original, las fugas detectadas, el trabajo de limpieza realizado y el estado final de la base limpia.</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="section-heading">1. Estado de la base original</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-copy">Composicion inicial del archivo antes del pipeline, con foco en volumen por peaje, sentido y caseta.</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        build_dashboard_metric_items(
+            [
+                (overview["raw_rows"], "registros de entrada"),
+                (overview["raw_peajes"], "peajes presentes"),
+                (overview["raw_casetas"], "casetas presentes"),
+                (overview["raw_sentidos"], "sentidos presentes"),
+                (overview["fugas_rows"], "filas con patron X / longitud atipica"),
+                (overview["fugas_unique"], "placas unicas con ese patron"),
+            ]
+        ),
+        unsafe_allow_html=True,
+    )
+    raw_col1, raw_col2 = st.columns([1.02, 1.24])
+    with raw_col1:
+        render_dashboard_figure(plot_volume_by_peaje(raw_tables["por_peaje"], "Registros originales por peaje", "#1d5ed8"))
+    with raw_col2:
+        render_dashboard_figure(plot_volume_by_sentido(raw_tables["por_peaje_sentido"], "Composicion original por peaje y sentido"))
+    raw_col3, raw_col4 = st.columns([1.08, 1.12])
+    with raw_col3:
+        render_dashboard_figure(plot_top_labels(raw_tables["por_caseta"][["ETIQUETA", "REGISTROS"]], "Casetas con mayor volumen en la base original", "#77a8ff"))
+    with raw_col4:
+        st.markdown('<div class="section-copy">Top operativo de casetas en la base original</div>', unsafe_allow_html=True)
+        st.dataframe(raw_tables["por_caseta"][["PEAJE", "CASETA", "SENTIDO", "REGISTROS", "PARTICIPACION_%"]].head(12), use_container_width=True, hide_index=True)
+
+    st.markdown('<div class="section-heading">2. Hallazgos y valor del procesamiento</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-copy">Aqui se concentra la evidencia del trabajo del pipeline: deteccion de fugas, correcciones de placa, cambios de caseta y recuperaciones de tiempo.</div>',
+        unsafe_allow_html=True,
+    )
+    export_col1, export_col2 = st.columns([1.4, 1])
+    with export_col1:
+        st.markdown(
+            '<div class="section-copy">El reporte consolida fugas por patron, fugas probables por flujo, fragmentaciones con confianza y placas con cambio de caseta.</div>',
+            unsafe_allow_html=True,
+        )
+    with export_col2:
+        st.download_button(
+            "Descargar reporte de fugas",
+            data=fugas_report_bytes,
+            file_name=f"reporte_fugas_{Path(source_name).stem}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="download_fugas_report",
+        )
+    st.markdown(
+        build_dashboard_metric_items(
+            [
+                (overview["flagged_plates"], "filas identificadas para revision de placa"),
+                (overview["corrected_plate_rows"], "filas con correccion de placa"),
+                (overview["fugas_probables"], "fugas probables por flujo"),
+                (overview["fragmentaciones_probables"], "fragmentaciones probables"),
+                (overview["fragmentaciones_alta_confianza"], "filas potencialmente unificables"),
+                (overview["caseta_change_groups"], "placas finales con cambio de caseta"),
+                (overview["recovered_time_rows"], "tiempos recuperados"),
+                (overview["final_time_adjustments"], "ajustes finales de tiempo"),
+                (overview["deleted_rows"], "filas excluidas del resultado"),
+            ]
+        ),
+        unsafe_allow_html=True,
+    )
+    central_col1, central_col2 = st.columns(2)
+    with central_col1:
+        render_dashboard_figure(
+            plot_top_labels(
+                plate_actions.rename(columns={"ACCION_UI": "ETIQUETA", "FILAS": "REGISTROS"})[["ETIQUETA", "REGISTROS"]],
+                "Acciones de placa ejecutadas",
+                "#163d72",
+            )
+        )
+    with central_col2:
+        render_dashboard_figure(
+            plot_top_labels(
+                time_actions.rename(columns={"ACCION_UI": "ETIQUETA", "FILAS": "REGISTROS"})[["ETIQUETA", "REGISTROS"]],
+                "Acciones de tiempo ejecutadas",
+                "#2f6ddc",
+            )
+        )
+    detail_col1, detail_col2 = st.columns(2)
+    with detail_col1:
+        st.markdown('<div class="section-copy">Fugas por patron de placa: termina en X y supera 6 caracteres normalizados.</div>', unsafe_allow_html=True)
+        st.dataframe(fugas_patron_detalle.head(20), use_container_width=True, hide_index=True)
+    with detail_col2:
+        st.markdown('<div class="section-copy">Placas finales que aparecen en mas de una caseta para el mismo peaje, sentido y fecha.</div>', unsafe_allow_html=True)
+        st.dataframe(caseta_changes.head(20), use_container_width=True, hide_index=True)
+    fuga_col1, fuga_col2 = st.columns(2)
+    with fuga_col1:
+        st.markdown('<div class="section-copy">Fugas probables por flujo activo: llega a cola y no registra caseta/salida dentro de la ventana operativa.</div>', unsafe_allow_html=True)
+        st.dataframe(fugas_probables_detalle.head(20), use_container_width=True, hide_index=True)
+    with fuga_col2:
+        st.markdown('<div class="section-copy">Fragmentaciones probables: una fila trae cola y otra cercana trae caseta/salida con placa muy similar.</div>', unsafe_allow_html=True)
+        st.dataframe(fragmentaciones_detalle.head(20), use_container_width=True, hide_index=True)
+    summary_col1, summary_col2 = st.columns(2)
+    with summary_col1:
+        st.markdown('<div class="section-copy">Resumen cuantitativo de acciones de placa</div>', unsafe_allow_html=True)
+        st.dataframe(plate_actions[["ACCION_UI", "FILAS"]], use_container_width=True, hide_index=True)
+    with summary_col2:
+        st.markdown('<div class="section-copy">Confianza de las fragmentaciones detectadas</div>', unsafe_allow_html=True)
+        st.dataframe(fragmentaciones_confianza, use_container_width=True, hide_index=True)
+    summary_col3, summary_col4 = st.columns(2)
+    with summary_col3:
+        st.markdown('<div class="section-copy">Resumen cuantitativo de acciones de tiempo</div>', unsafe_allow_html=True)
+        st.dataframe(time_actions[["ACCION_UI", "FILAS"]], use_container_width=True, hide_index=True)
+    with summary_col4:
+        st.markdown('<div class="section-copy">Lectura operativa de la unificacion potencial</div>', unsafe_allow_html=True)
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"hallazgo": "fragmentaciones probables", "filas": overview["fragmentaciones_probables"]},
+                    {"hallazgo": "alta confianza para unificar", "filas": overview["fragmentaciones_alta_confianza"]},
+                    {"hallazgo": "fugas probables por flujo", "filas": overview["fugas_probables"]},
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown('<div class="section-heading">3. Estado de la base limpia</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-copy">Distribucion final despues del pipeline, con porcentaje de retencion y concentracion por peaje, sentido y caseta.</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        build_dashboard_metric_items(
+            [
+                (overview["clean_rows"], "registros en base limpia"),
+                (f"{overview['retention_pct']}%", "retencion sobre entrada"),
+                (overview["clean_peajes"], "peajes en salida"),
+                (overview["clean_casetas"], "casetas en salida"),
+                (overview["clean_sentidos"], "sentidos en salida"),
+                (overview["pending_rows"], "pendientes finales"),
+            ]
+        ),
+        unsafe_allow_html=True,
+    )
+    clean_col1, clean_col2 = st.columns([1.02, 1.24])
+    with clean_col1:
+        render_dashboard_figure(plot_volume_by_peaje(clean_tables["por_peaje"], "Registros finales por peaje", "#0f8b6d"))
+    with clean_col2:
+        render_dashboard_figure(plot_volume_by_sentido(clean_tables["por_peaje_sentido"], "Composicion final por peaje y sentido"))
+    clean_col3, clean_col4 = st.columns([1.08, 1.12])
+    with clean_col3:
+        render_dashboard_figure(plot_top_labels(clean_tables["por_caseta"][["ETIQUETA", "REGISTROS"]], "Casetas con mayor volumen en la base limpia", "#63c29b"))
+    with clean_col4:
+        st.markdown('<div class="section-copy">Top operativo de casetas en la base limpia</div>', unsafe_allow_html=True)
+        st.dataframe(clean_tables["por_caseta"][["PEAJE", "CASETA", "SENTIDO", "REGISTROS", "PARTICIPACION_%"]].head(12), use_container_width=True, hide_index=True)
 
 
 def render_processing_outputs(processed_payload: dict[str, object], storage_backend, can_view_history: bool) -> None:
     export_tables = processed_payload["export_tables"]
+    dashboard = processed_payload["dashboard"]
+    fugas_report_bytes = processed_payload["fugas_report_bytes"]
 
     info_col, clear_col = st.columns([4, 1])
     info_col.caption(
@@ -2659,9 +2837,11 @@ def render_processing_outputs(processed_payload: dict[str, object], storage_back
     c3.metric("Eliminados", metric_values.get("filas_eliminadas", 0))
     c4.metric("Pendientes", metric_values.get("filas_pendientes", 0))
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        ["Resumen", "Base limpia", "Eliminados", "Pendientes", "Revision placas", "Bloques"]
+    tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        ["Dashboard", "Resumen", "Base limpia", "Eliminados", "Pendientes", "Revision placas", "Bloques"]
     )
+    with tab0:
+        render_processing_dashboard(dashboard, fugas_report_bytes, processed_payload["source_name"])
     with tab1:
         st.dataframe(export_tables["reporte_resumen"], use_container_width=True)
     with tab2:
@@ -3607,11 +3787,50 @@ def build_complementary_package(df_resultados: pd.DataFrame, df_export_base: pd.
 
 
 def to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
+    header_fill = PatternFill(fill_type="solid", fgColor="163564")
+    header_font = Font(color="FFFFFF", bold=True)
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    body_alignment = Alignment(vertical="top", wrap_text=True)
+    thin_border = Border(
+        left=Side(style="thin", color="D7E1F0"),
+        right=Side(style="thin", color="D7E1F0"),
+        top=Side(style="thin", color="D7E1F0"),
+        bottom=Side(style="thin", color="D7E1F0"),
+    )
+
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for sheet_name, df_sheet in sheets.items():
             safe_name = sheet_name[:31]
             df_sheet.to_excel(writer, sheet_name=safe_name, index=False)
+            worksheet = writer.book[safe_name]
+            worksheet.freeze_panes = "A2"
+            worksheet.auto_filter.ref = worksheet.dimensions
+            worksheet.sheet_view.showGridLines = False
+
+            for cell in worksheet[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = header_alignment
+                cell.border = thin_border
+
+            for row in worksheet.iter_rows(min_row=2):
+                for cell in row:
+                    cell.alignment = body_alignment
+                    cell.border = thin_border
+
+            for col_idx, column_name in enumerate(df_sheet.columns, start=1):
+                series = df_sheet[column_name]
+                value_lengths = [len(str(column_name))]
+                if not series.empty:
+                    value_lengths.extend(
+                        series.map(lambda value: max(len(part) for part in str(value).splitlines()) if pd.notna(value) else 0).tolist()
+                    )
+                adjusted_width = min(max(value_lengths) + 2, 50)
+                adjusted_width = max(adjusted_width, 10)
+                worksheet.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
+
+            worksheet.row_dimensions[1].height = 24
     output.seek(0)
     return output.getvalue()
 
@@ -3738,6 +3957,457 @@ def build_run_payload(
     }
 
 
+def format_dashboard_dimension(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "Sin dato"
+    text = str(value).strip()
+    return text if text else "Sin dato"
+
+
+def format_dashboard_action(value: object) -> str:
+    text = format_dashboard_dimension(value)
+    if text == "Sin dato":
+        return text
+    text = text.replace("placa:", "Placa: ")
+    text = text.replace("tiempo:", "Tiempo: ")
+    text = text.replace("eliminado:", "Eliminado: ")
+    text = text.replace("_", " ")
+    return text.capitalize()
+
+
+def prepare_dashboard_dataframe(df_in: pd.DataFrame) -> pd.DataFrame:
+    df = df_in.copy()
+    for column in ["PEAJE", "CASETA", "SENTIDO", "PLACA"]:
+        if column not in df.columns:
+            df[column] = pd.NA
+        df[column] = df[column].map(format_dashboard_dimension)
+    if "FECHA" not in df.columns:
+        df["FECHA"] = pd.NaT
+    df["FECHA_DIA_DASH"] = pd.to_datetime(df["FECHA"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df["FECHA_DIA_DASH"] = df["FECHA_DIA_DASH"].fillna("Sin fecha")
+    return df
+
+
+def detect_raw_fugas(df_in: pd.DataFrame) -> pd.DataFrame:
+    df = prepare_dashboard_dataframe(df_in)
+    placa_norm = (
+        df["PLACA"]
+        .fillna("")
+        .astype(str)
+        .str.upper()
+        .str.replace(r"[^A-Z0-9]", "", regex=True)
+    )
+    fugas = df.loc[placa_norm.str.endswith("X") & (placa_norm.str.len() > 6)].copy()
+    fugas["PLACA_NORMALIZADA"] = placa_norm.loc[fugas.index]
+    fugas["LONGITUD_NORMALIZADA"] = fugas["PLACA_NORMALIZADA"].str.len()
+    fugas = fugas[
+        [
+            "PEAJE",
+            "CASETA",
+            "SENTIDO",
+            "FECHA_DIA_DASH",
+            "PLACA",
+            "PLACA_NORMALIZADA",
+            "LONGITUD_NORMALIZADA",
+        ]
+    ].rename(columns={"FECHA_DIA_DASH": "FECHA"})
+    return fugas.sort_values(["PEAJE", "SENTIDO", "CASETA", "FECHA", "PLACA_NORMALIZADA"]).reset_index(drop=True)
+
+
+def canonicalize_plate_for_fuga(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    text = re.sub(r"[^A-Z0-9]", "", str(value).upper())
+    translated = []
+    for char in text:
+        if char in {"0", "O"}:
+            translated.append("O")
+        elif char in {"1", "I"}:
+            translated.append("I")
+        elif char in {"5", "S"}:
+            translated.append("S")
+        elif char in {"8", "B"}:
+            translated.append("B")
+        elif char in {"2", "Z"}:
+            translated.append("Z")
+        elif char in {"6", "G"}:
+            translated.append("G")
+        else:
+            translated.append(char)
+    return "".join(translated)
+
+
+def are_plates_similar_for_fuga(plate_a: object, plate_b: object) -> bool:
+    canon_a = canonicalize_plate_for_fuga(plate_a)
+    canon_b = canonicalize_plate_for_fuga(plate_b)
+    if not canon_a or not canon_b:
+        return False
+    if canon_a == canon_b:
+        return True
+    if len(canon_a) == len(canon_b):
+        diff = sum(char_a != char_b for char_a, char_b in zip(canon_a, canon_b))
+        if diff <= 1:
+            return True
+        if diff == 2 and sorted(canon_a) == sorted(canon_b):
+            return True
+    return distancia_levenshtein(canon_a, canon_b) <= 1
+
+
+def classify_fragment_similarity(plate_a: object, plate_b: object, delta_seg: float) -> tuple[bool, str]:
+    canon_a = canonicalize_plate_for_fuga(plate_a)
+    canon_b = canonicalize_plate_for_fuga(plate_b)
+    if not canon_a or not canon_b:
+        return False, "sin_placa"
+    if canon_a == canon_b:
+        return True, "alta"
+
+    if len(canon_a) == len(canon_b):
+        diff = sum(char_a != char_b for char_a, char_b in zip(canon_a, canon_b))
+        if diff <= 1:
+            return True, "alta" if delta_seg <= 90 else "media"
+        if diff == 2 and sorted(canon_a) == sorted(canon_b):
+            return True, "media"
+
+    if distancia_levenshtein(canon_a, canon_b) <= 1:
+        return True, "media"
+    return False, "baja"
+
+
+def detect_flow_fuga_candidates(time_result: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    df = time_result["df_tiempos_bordes"].copy()
+    if df.empty:
+        empty_fugas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_FINAL", "TIPO_FUGA", "DETALLE"])
+        empty_fragmentos = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_T1", "PLACA_T2T3", "DELTA_SEG", "CONFIANZA", "DETALLE"])
+        return {"fugas_probables": empty_fugas, "fragmentaciones_probables": empty_fragmentos}
+
+    df["T1_DASH"] = df["LLEGADA COLA"].map(normalizar_hora)
+    df["T2_DASH"] = df["LLEGADA CASETA"].map(normalizar_hora)
+    df["T3_DASH"] = df["SALIDA CASETA"].map(normalizar_hora)
+    df["FECHA_DIA_DASH"] = pd.to_datetime(df["FECHA"], errors="coerce").dt.normalize()
+    df = df.sort_values(
+        ["PEAJE", "CASETA", "SENTIDO", "FECHA_DIA_DASH", "TIEMPO_REFERENCIA", "T1_DASH", "T2_DASH", "T3_DASH", "_ORDEN_FILA"],
+        na_position="last",
+    ).copy()
+
+    fugas_probables = []
+    fragmentaciones_probables = []
+
+    for keys, group in df.groupby(["PEAJE", "CASETA", "SENTIDO", "FECHA_DIA_DASH"], dropna=False):
+        group = group.reset_index(drop=True)
+        complete_mask = group["T1_DASH"].notna() & group["T2_DASH"].notna() & group["T3_DASH"].notna()
+        paired_rows = set()
+        for idx, row in group.iterrows():
+            if idx in paired_rows or complete_mask.iloc[idx]:
+                continue
+
+            prev_complete = complete_mask.iloc[:idx].any()
+            next_complete = complete_mask.iloc[idx + 1 :].any()
+            ubicacion = "interior" if prev_complete and next_complete else "borde"
+            tiene_t1 = pd.notna(row["T1_DASH"])
+            tiene_t2 = pd.notna(row["T2_DASH"])
+            tiene_t3 = pd.notna(row["T3_DASH"])
+
+            if tiene_t1 and (not tiene_t2) and (not tiene_t3):
+                pair_found = False
+                if ubicacion == "interior":
+                    for look_ahead in range(idx + 1, min(idx + 5, len(group))):
+                        if look_ahead in paired_rows:
+                            continue
+                        other = group.iloc[look_ahead]
+                        other_is_fragment = pd.isna(other["T1_DASH"]) and pd.notna(other["T2_DASH"]) and pd.notna(other["T3_DASH"])
+                        if not other_is_fragment:
+                            continue
+                        delta_seg = (other["T2_DASH"] - row["T1_DASH"]).total_seconds()
+                        if delta_seg < 0 or delta_seg > 180:
+                            continue
+                        is_match, confidence = classify_fragment_similarity(row.get("PLACA_FINAL"), other.get("PLACA_FINAL"), delta_seg)
+                        if not is_match:
+                            continue
+                        pair_found = True
+                        paired_rows.add(look_ahead)
+                        fragmentaciones_probables.append(
+                            {
+                                "PEAJE": format_dashboard_dimension(keys[0]),
+                                "CASETA": format_dashboard_dimension(keys[1]),
+                                "SENTIDO": format_dashboard_dimension(keys[2]),
+                                "FECHA": pd.to_datetime(keys[3]).strftime("%Y-%m-%d") if pd.notna(keys[3]) else "Sin fecha",
+                                "PLACA_T1": format_dashboard_dimension(row.get("PLACA_FINAL")),
+                                "PLACA_T2T3": format_dashboard_dimension(other.get("PLACA_FINAL")),
+                                "DELTA_SEG": int(delta_seg),
+                                "CONFIANZA": confidence,
+                                "DETALLE": "Registro partido: cola en una fila y caseta/salida en otra fila muy cercana.",
+                            }
+                        )
+                        break
+
+                if not pair_found:
+                    tipo = "fuga_probable_no_inicia_caseta" if ubicacion == "interior" else "incompleto_de_borde"
+                    detalle = (
+                        "Vehiculo llega a cola pero no registra llegada ni salida de caseta dentro de un flujo activo."
+                        if ubicacion == "interior"
+                        else "Registro incompleto fuera de la ventana completa del flujo; no se clasifica como fuga fuerte."
+                    )
+                    fugas_probables.append(
+                        {
+                            "PEAJE": format_dashboard_dimension(keys[0]),
+                            "CASETA": format_dashboard_dimension(keys[1]),
+                            "SENTIDO": format_dashboard_dimension(keys[2]),
+                            "FECHA": pd.to_datetime(keys[3]).strftime("%Y-%m-%d") if pd.notna(keys[3]) else "Sin fecha",
+                            "PLACA_FINAL": format_dashboard_dimension(row.get("PLACA_FINAL")),
+                            "TIPO_FUGA": tipo,
+                            "DETALLE": detalle,
+                        }
+                    )
+            elif tiene_t1 and tiene_t2 and (not tiene_t3):
+                fugas_probables.append(
+                    {
+                        "PEAJE": format_dashboard_dimension(keys[0]),
+                        "CASETA": format_dashboard_dimension(keys[1]),
+                        "SENTIDO": format_dashboard_dimension(keys[2]),
+                        "FECHA": pd.to_datetime(keys[3]).strftime("%Y-%m-%d") if pd.notna(keys[3]) else "Sin fecha",
+                        "PLACA_FINAL": format_dashboard_dimension(row.get("PLACA_FINAL")),
+                        "TIPO_FUGA": "fuga_probable_no_finaliza_caseta",
+                        "DETALLE": "Vehiculo llega a cola e inicia caseta, pero no registra salida.",
+                    }
+                )
+
+    df_fugas = pd.DataFrame(fugas_probables)
+    if not df_fugas.empty:
+        df_fugas = df_fugas.sort_values(["TIPO_FUGA", "PEAJE", "CASETA", "FECHA", "PLACA_FINAL"]).reset_index(drop=True)
+    else:
+        df_fugas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_FINAL", "TIPO_FUGA", "DETALLE"])
+
+    df_fragmentos = pd.DataFrame(fragmentaciones_probables)
+    if not df_fragmentos.empty:
+        df_fragmentos = df_fragmentos.sort_values(["PEAJE", "CASETA", "FECHA", "DELTA_SEG"]).reset_index(drop=True)
+    else:
+        df_fragmentos = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_T1", "PLACA_T2T3", "DELTA_SEG", "CONFIANZA", "DETALLE"])
+
+    return {
+        "fugas_probables": df_fugas,
+        "fragmentaciones_probables": df_fragmentos,
+    }
+
+
+def build_volume_tables(df_in: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    df = prepare_dashboard_dataframe(df_in)
+    total = max(len(df), 1)
+
+    por_peaje = df.groupby("PEAJE", dropna=False).size().rename("REGISTROS").reset_index()
+    por_peaje["PARTICIPACION_%"] = (por_peaje["REGISTROS"] / total * 100).round(2)
+    por_peaje = por_peaje.sort_values(["REGISTROS", "PEAJE"], ascending=[False, True]).reset_index(drop=True)
+
+    por_peaje_sentido = df.groupby(["PEAJE", "SENTIDO"], dropna=False).size().rename("REGISTROS").reset_index()
+    por_peaje_sentido = por_peaje_sentido.sort_values(
+        ["PEAJE", "REGISTROS", "SENTIDO"],
+        ascending=[True, False, True],
+    ).reset_index(drop=True)
+
+    por_caseta = df.groupby(["PEAJE", "CASETA", "SENTIDO"], dropna=False).size().rename("REGISTROS").reset_index()
+    por_caseta["PARTICIPACION_%"] = (por_caseta["REGISTROS"] / total * 100).round(2)
+    por_caseta["ETIQUETA"] = por_caseta["PEAJE"] + " | C" + por_caseta["CASETA"] + " | " + por_caseta["SENTIDO"]
+    por_caseta = por_caseta.sort_values(["REGISTROS", "PEAJE", "CASETA"], ascending=[False, True, True]).reset_index(drop=True)
+    return {
+        "por_peaje": por_peaje,
+        "por_peaje_sentido": por_peaje_sentido,
+        "por_caseta": por_caseta,
+    }
+
+
+def build_dashboard_metric_items(items: list[tuple[object, str]]) -> str:
+    cards = []
+    for value, label in items:
+        cards.append(
+            f'<div class="metric-tile"><div class="metric-value" style="color:#163564;">{value}</div>'
+            f'<div class="metric-label" style="color:#4d6587;">{label}</div></div>'
+        )
+    return f'<div class="metrics-strip">{"".join(cards)}</div>'
+
+
+def plot_volume_by_peaje(df_chart: pd.DataFrame, title: str, color: str) -> plt.Figure | None:
+    if df_chart.empty:
+        return None
+    plot_df = df_chart.sort_values("REGISTROS", ascending=True)
+    fig, ax = plt.subplots(figsize=(7.4, max(3.2, len(plot_df) * 0.68)), dpi=160)
+    ax.barh(plot_df["PEAJE"], plot_df["REGISTROS"], color=color, edgecolor="#123256", linewidth=0.7)
+    ax.set_title(title, fontsize=12, fontweight="bold", loc="left")
+    ax.grid(axis="x", color="#dbe5f3", linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.set_xlabel("Registros")
+    for spine in ["top", "right", "left"]:
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_color("#bfd0e6")
+    for y_pos, value in enumerate(plot_df["REGISTROS"]):
+        ax.text(value, y_pos, f" {int(value)}", va="center", ha="left", fontsize=9, color="#163564")
+    fig.patch.set_facecolor("white")
+    return fig
+
+
+def plot_volume_by_sentido(df_chart: pd.DataFrame, title: str) -> plt.Figure | None:
+    if df_chart.empty:
+        return None
+    pivot = df_chart.pivot_table(index="PEAJE", columns="SENTIDO", values="REGISTROS", aggfunc="sum", fill_value=0)
+    if pivot.empty:
+        return None
+    pivot = pivot.loc[pivot.sum(axis=1).sort_values().index]
+    colors = ["#0f3d91", "#2f6ddc", "#7aa2e3", "#b7ccee", "#dce8f8"]
+    fig, ax = plt.subplots(figsize=(7.8, max(3.4, len(pivot) * 0.72)), dpi=160)
+    left = pd.Series(0, index=pivot.index, dtype=float)
+    for idx, sentido in enumerate(pivot.columns):
+        values = pivot[sentido]
+        ax.barh(
+            pivot.index,
+            values,
+            left=left,
+            label=str(sentido),
+            color=colors[idx % len(colors)],
+            edgecolor="white",
+            linewidth=0.6,
+        )
+        left = left + values
+    ax.set_title(title, fontsize=12, fontweight="bold", loc="left")
+    ax.set_xlabel("Registros")
+    ax.grid(axis="x", color="#dbe5f3", linewidth=0.8)
+    ax.set_axisbelow(True)
+    for spine in ["top", "right", "left"]:
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_color("#bfd0e6")
+    ax.legend(frameon=False, loc="lower right")
+    fig.patch.set_facecolor("white")
+    return fig
+
+
+def plot_top_labels(df_chart: pd.DataFrame, title: str, color: str) -> plt.Figure | None:
+    if df_chart.empty:
+        return None
+    plot_df = df_chart.head(10).iloc[::-1].copy()
+    fig, ax = plt.subplots(figsize=(8.6, max(4.0, len(plot_df) * 0.6)), dpi=160)
+    ax.barh(plot_df["ETIQUETA"], plot_df["REGISTROS"], color=color, edgecolor="#183a66", linewidth=0.7)
+    ax.set_title(title, fontsize=12, fontweight="bold", loc="left")
+    ax.set_xlabel("Registros")
+    ax.grid(axis="x", color="#dbe5f3", linewidth=0.8)
+    ax.set_axisbelow(True)
+    for spine in ["top", "right", "left"]:
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_color("#bfd0e6")
+    for y_pos, value in enumerate(plot_df["REGISTROS"]):
+        ax.text(value, y_pos, f" {int(value)}", va="center", ha="left", fontsize=8.6, color="#163564")
+    fig.patch.set_facecolor("white")
+    return fig
+
+
+def render_dashboard_figure(fig: plt.Figure | None) -> None:
+    if fig is None:
+        st.info("No hay datos suficientes para graficar este bloque.")
+        return
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+
+def build_processing_dashboard(df_std: pd.DataFrame, result: dict[str, object]) -> dict[str, object]:
+    export_tables = result["export_tables"]
+    plate_df = result["plate_result"]["df"].copy()
+    time_final = result["time_result"]["df_tiempos_final"].copy()
+    raw_df = prepare_dashboard_dataframe(df_std)
+    clean_df = prepare_dashboard_dataframe(export_tables["base_limpia"])
+    fugas_df = detect_raw_fugas(df_std)
+    flow_fugas = detect_flow_fuga_candidates(result["time_result"])
+    fugas_probables_df = flow_fugas["fugas_probables"]
+    fragmentaciones_df = flow_fugas["fragmentaciones_probables"]
+    fragmentaciones_confianza = (
+        fragmentaciones_df["CONFIANZA"].value_counts().rename_axis("CONFIANZA").reset_index(name="FILAS")
+        if not fragmentaciones_df.empty
+        else pd.DataFrame(columns=["CONFIANZA", "FILAS"])
+    )
+
+    plate_actions = plate_df["PLACA_ACCION_FINAL"].astype(str).value_counts(dropna=False).rename_axis("ACCION").reset_index(name="FILAS")
+    plate_actions["ACCION_UI"] = plate_actions["ACCION"].map(format_dashboard_action)
+
+    time_actions = time_final["TIEMPO_ACCION_CIERRE"].astype(str).value_counts(dropna=False).rename_axis("ACCION").reset_index(name="FILAS")
+    time_actions["ACCION_UI"] = time_actions["ACCION"].map(format_dashboard_action)
+
+    plate_df["FECHA_DIA_DASH"] = pd.to_datetime(plate_df["FECHA"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("Sin fecha")
+    plate_df["PEAJE"] = plate_df["PEAJE"].map(format_dashboard_dimension)
+    plate_df["CASETA"] = plate_df["CASETA"].map(format_dashboard_dimension)
+    plate_df["SENTIDO"] = plate_df["SENTIDO"].map(format_dashboard_dimension)
+    plate_df["PLACA_FINAL_DECIDIDA"] = plate_df["PLACA_FINAL_DECIDIDA"].map(format_dashboard_dimension)
+    caseta_changes = (
+        plate_df.groupby(["PEAJE", "SENTIDO", "FECHA_DIA_DASH", "PLACA_FINAL_DECIDIDA"], dropna=False)
+        .agg(
+            REGISTROS=("PLACA", "size"),
+            CASETAS_UNICAS=("CASETA", "nunique"),
+            CASETAS=("CASETA", lambda s: ", ".join(sorted(pd.unique(s.astype(str))))),
+            ACCIONES=("PLACA_ACCION_FINAL", lambda s: ", ".join(sorted(pd.unique(s.astype(str))))),
+        )
+        .reset_index()
+    )
+    caseta_changes = caseta_changes[caseta_changes["CASETAS_UNICAS"] > 1].copy()
+    caseta_changes = caseta_changes.rename(columns={"FECHA_DIA_DASH": "FECHA", "PLACA_FINAL_DECIDIDA": "PLACA_FINAL"})
+    caseta_changes = caseta_changes.sort_values(["CASETAS_UNICAS", "REGISTROS"], ascending=[False, False]).reset_index(drop=True)
+
+    corrected_plate_rows = int(plate_df["PLACA_ACCION_FINAL"].astype(str).str.startswith("corregir_").sum())
+    recovered_time_rows = int(time_final["TIEMPO_ACCION_CIERRE"].astype(str).str.startswith("imputar_").sum())
+    final_time_adjustments = int(time_final["TIEMPO_ACCION_CIERRE"].astype(str).str.contains("swap_|consolidar_post_tiempo", regex=True, na=False).sum())
+
+    overview = {
+        "raw_rows": len(raw_df),
+        "clean_rows": len(clean_df),
+        "deleted_rows": len(export_tables["casos_eliminados"]),
+        "pending_rows": len(export_tables["casos_pendientes"]),
+        "raw_peajes": int(raw_df["PEAJE"].nunique(dropna=False)),
+        "raw_casetas": int(raw_df["CASETA"].nunique(dropna=False)),
+        "raw_sentidos": int(raw_df["SENTIDO"].nunique(dropna=False)),
+        "clean_peajes": int(clean_df["PEAJE"].nunique(dropna=False)),
+        "clean_casetas": int(clean_df["CASETA"].nunique(dropna=False)),
+        "clean_sentidos": int(clean_df["SENTIDO"].nunique(dropna=False)),
+        "fugas_rows": len(fugas_df),
+        "fugas_unique": int(fugas_df["PLACA_NORMALIZADA"].nunique()) if not fugas_df.empty else 0,
+        "fugas_probables": len(fugas_probables_df),
+        "fragmentaciones_probables": len(fragmentaciones_df),
+        "fragmentaciones_alta_confianza": int(fragmentaciones_df["CONFIANZA"].eq("alta").sum()) if not fragmentaciones_df.empty else 0,
+        "flagged_plates": len(export_tables["revision_placas"]),
+        "corrected_plate_rows": corrected_plate_rows,
+        "caseta_change_groups": len(caseta_changes),
+        "recovered_time_rows": recovered_time_rows,
+        "final_time_adjustments": final_time_adjustments,
+        "retention_pct": round((len(clean_df) / len(raw_df) * 100), 2) if len(raw_df) else 0.0,
+    }
+    return {
+        "overview": overview,
+        "raw_tables": build_volume_tables(raw_df),
+        "clean_tables": build_volume_tables(clean_df),
+        "fugas_patron_detalle": fugas_df,
+        "fugas_probables_detalle": fugas_probables_df,
+        "fragmentaciones_detalle": fragmentaciones_df,
+        "fragmentaciones_confianza": fragmentaciones_confianza,
+        "plate_actions": plate_actions,
+        "time_actions": time_actions,
+        "caseta_changes": caseta_changes,
+    }
+
+
+def build_fugas_report_sheets(dashboard: dict[str, object]) -> dict[str, pd.DataFrame]:
+    overview = dashboard["overview"]
+    resumen = pd.DataFrame(
+        [
+            {"indicador": "filas_patron_x_longitud", "valor": overview["fugas_rows"]},
+            {"indicador": "placas_patron_x_unicas", "valor": overview["fugas_unique"]},
+            {"indicador": "fugas_probables_flujo", "valor": overview["fugas_probables"]},
+            {"indicador": "fragmentaciones_probables", "valor": overview["fragmentaciones_probables"]},
+            {"indicador": "fragmentaciones_alta_confianza", "valor": overview["fragmentaciones_alta_confianza"]},
+            {"indicador": "placas_con_cambio_caseta", "valor": overview["caseta_change_groups"]},
+        ]
+    )
+    return {
+        "resumen_fugas": resumen,
+        "fugas_patron_placa": dashboard["fugas_patron_detalle"],
+        "fugas_probables_flujo": dashboard["fugas_probables_detalle"],
+        "fragmentaciones_probables": dashboard["fragmentaciones_detalle"],
+        "fragmentaciones_confianza": dashboard["fragmentaciones_confianza"],
+        "placas_cambio_caseta": dashboard["caseta_changes"],
+    }
+
+
 def process_pipeline(df_std: pd.DataFrame, config: dict, manual_rules_df: pd.DataFrame) -> dict[str, object]:
     config = {**DEFAULT_CONFIG, **config}
     df_std = df_std.copy()
@@ -3769,6 +4439,7 @@ def process_pipeline(df_std: pd.DataFrame, config: dict, manual_rules_df: pd.Dat
         export_tables["export_base_detalle"],
     )
     return {
+        "input_df": df_std,
         "plate_result": plate_result,
         "time_result": time_result,
         "export_tables": export_tables,
@@ -4228,7 +4899,7 @@ def render_processing_page(storage_backend, current_user: dict | None) -> None:
     st.markdown(
         build_hero_panel(
             title="Modulo TEC",
-            copy="Carga bases, revisa columnas, controla la configuracion del pipeline y descarga los entregables resultantes desde un unico flujo de trabajo.",
+            copy="Carga bases, revisa columnas, controla la configuracion del pipeline y revisa un tablero ejecutivo del antes y despues del procesamiento dentro del aplicativo.",
             kicker="Procesamiento activo",
             metrics=[
                 ("TEC", "modulo"),
@@ -4512,7 +5183,8 @@ def main() -> None:
 
     with st.sidebar:
         if current_user:
-            render_contractor_branding()
+            if current_page != "TEC":
+                render_contractor_branding()
             st.divider()
             st.header("Sesion")
             st.write(current_user["full_name"])
