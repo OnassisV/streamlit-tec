@@ -3988,9 +3988,7 @@ def to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
                 series = df_sheet[column_name]
                 value_lengths = [len(str(column_name))]
                 if not series.empty:
-                    value_lengths.extend(
-                        series.map(lambda value: max(len(part) for part in str(value).splitlines()) if pd.notna(value) else 0).tolist()
-                    )
+                    value_lengths.extend(series.map(measure_text_width).tolist())
                 adjusted_width = min(max(value_lengths) + 2, 50)
                 adjusted_width = max(adjusted_width, 10)
                 worksheet.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
@@ -4012,6 +4010,20 @@ def write_report_block(
     worksheet.cell(row=startrow + 1, column=1, value=title)
     table.to_excel(writer, sheet_name=sheet_name, startrow=startrow + 2, index=False)
     return startrow + len(table) + 5
+
+
+def measure_text_width(value: object) -> int:
+    if value is None:
+        return 0
+    try:
+        is_missing = pd.isna(value)
+        if isinstance(is_missing, (bool, np.bool_)) and is_missing:
+            return 0
+    except Exception:
+        pass
+    text = str(value)
+    lines = text.splitlines() or [text]
+    return max((len(part) for part in lines), default=0)
 
 
 def apply_standard_worksheet_format(worksheet, df_sheet: pd.DataFrame | None = None, header_row: int = 1, freeze_panes: str = "A2") -> None:
@@ -4046,9 +4058,7 @@ def apply_standard_worksheet_format(worksheet, df_sheet: pd.DataFrame | None = N
             series = df_sheet[column_name]
             value_lengths = [len(str(column_name))]
             if not series.empty:
-                value_lengths.extend(
-                    series.map(lambda value: max(len(part) for part in str(value).splitlines()) if pd.notna(value) else 0).tolist()
-                )
+                value_lengths.extend(series.map(measure_text_width).tolist())
             adjusted_width = min(max(value_lengths) + 2, 50)
             adjusted_width = max(adjusted_width, 10)
             worksheet.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
@@ -4059,7 +4069,7 @@ def apply_standard_worksheet_format(worksheet, df_sheet: pd.DataFrame | None = N
                 value = row[0]
                 if value is None:
                     continue
-                max_length = max(max_length, max(len(part) for part in str(value).splitlines()) + 2)
+                max_length = max(max_length, measure_text_width(value) + 2)
             worksheet.column_dimensions[get_column_letter(col_idx)].width = min(max_length, 50)
 
     worksheet.row_dimensions[header_row].height = 24
@@ -4118,7 +4128,7 @@ def apply_report_summary_format(worksheet) -> None:
             value = row[0]
             if value is None:
                 continue
-            max_length = max(max_length, max(len(part) for part in str(value).splitlines()) + 2)
+            max_length = max(max_length, measure_text_width(value) + 2)
         worksheet.column_dimensions[get_column_letter(col_idx)].width = min(max_length, 50)
 
 
