@@ -2621,12 +2621,20 @@ def build_processing_artifacts(
 ) -> dict[str, object]:
     export_tables = result["export_tables"]
     dashboard = build_processing_dashboard(result["input_df"], result)
+    output_filenames = derive_output_filenames(uploaded_name)
+    report_label = output_filenames["report_label"]
     return {
         "input_signature": processing_signature,
         "source_name": uploaded_name,
         "selected_sheet": selected_sheet,
         "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "export_tables": export_tables,
+        "output_filenames": output_filenames,
+        "base_limpia_bytes": to_excel_bytes({"base_limpia": export_tables["base_limpia"]}),
+        "exact_export_bytes": to_exact_excel_bytes(result["exact_export"]),
+        "complementary_excel_bytes": to_excel_bytes(result["complementary_package"]["excel_sheets"]),
+        "report_docx_bytes": to_docx_bytes(report_label, result["informe_package"]),
+        "report_docx_model_bytes": to_templated_docx_bytes(report_label, result["informe_package"]),
         "dashboard": dashboard,
         "fugas_report_bytes": to_excel_bytes(build_fugas_report_sheets(dashboard)),
     }
@@ -2670,17 +2678,11 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
         ),
         unsafe_allow_html=True,
     )
-    raw_col1, raw_col2 = st.columns([1.02, 1.24])
+    raw_col1, raw_col2 = st.columns([1.08, 1.12])
     with raw_col1:
-        render_dashboard_figure(plot_volume_by_peaje(raw_tables["por_peaje"], "Registros originales por peaje", "#1d5ed8"))
-    with raw_col2:
         render_dashboard_figure(plot_volume_by_sentido(raw_tables["por_peaje_sentido"], "Composicion original por peaje y sentido"))
-    raw_col3, raw_col4 = st.columns([1.08, 1.12])
-    with raw_col3:
-        render_dashboard_figure(plot_top_labels(raw_tables["por_caseta"][["ETIQUETA", "REGISTROS"]], "Casetas con mayor volumen en la base original", "#77a8ff"))
-    with raw_col4:
-        st.markdown('<div class="section-copy">Top operativo de casetas en la base original</div>', unsafe_allow_html=True)
-        st.dataframe(raw_tables["por_caseta"][["PEAJE", "CASETA", "SENTIDO", "REGISTROS", "PARTICIPACION_%"]].head(12), use_container_width=True, hide_index=True)
+    with raw_col2:
+        render_dashboard_figure(plot_top_labels(raw_tables["por_caseta"][ ["ETIQUETA", "REGISTROS"]], "Casetas con mayor volumen en la base original", "#77a8ff"))
 
     st.markdown('<div class="section-heading">2. Hallazgos y valor del procesamiento</div>', unsafe_allow_html=True)
     st.markdown(
@@ -2705,6 +2707,7 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
                 (overview["recovered_time_rows"], "tiempos recuperados"),
                 (overview["final_time_adjustments"], "ajustes finales de tiempo"),
                 (overview["deleted_rows"], "filas excluidas del resultado"),
+                (overview["pending_rows"], "pendientes finales"),
             ]
         ),
         unsafe_allow_html=True,
@@ -2743,18 +2746,8 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
     with fuga_col2:
         st.markdown('<div class="section-copy">Fragmentaciones probables: una fila trae cola y otra cercana trae caseta/salida con placa muy similar. Esta categoria compite contra fuga y ayuda a no sobredeclarar evasiones cuando la mejor explicacion es un registro partido.</div>', unsafe_allow_html=True)
         st.dataframe(fragmentaciones_detalle.head(20), use_container_width=True, hide_index=True)
-    summary_col1, summary_col2 = st.columns(2)
-    with summary_col1:
-        st.markdown('<div class="section-copy">Resumen cuantitativo de acciones de placa</div>', unsafe_allow_html=True)
-        st.dataframe(plate_actions[["ACCION_UI", "FILAS"]], use_container_width=True, hide_index=True)
-    with summary_col2:
-        st.markdown('<div class="section-copy">Confianza de las fragmentaciones detectadas</div>', unsafe_allow_html=True)
-        st.dataframe(fragmentaciones_confianza, use_container_width=True, hide_index=True)
-    summary_col3, summary_col4 = st.columns(2)
-    with summary_col3:
-        st.markdown('<div class="section-copy">Resumen cuantitativo de acciones de tiempo</div>', unsafe_allow_html=True)
-        st.dataframe(time_actions[["ACCION_UI", "FILAS"]], use_container_width=True, hide_index=True)
-    with summary_col4:
+    summary_col = st.columns(1)[0]
+    with summary_col:
         st.markdown('<div class="section-copy">Lectura operativa consolidada: primero se revisan fragmentaciones, luego fugas fuertes, despues fugas probables y finalmente incompletos no concluyentes.</div>', unsafe_allow_html=True)
         st.dataframe(
             pd.DataFrame(
@@ -2809,13 +2802,8 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
         st.info("No hay suficientes registros con tiempos completos para resumir teoria de colas en el dashboard.")
     else:
         st.markdown(build_dashboard_metric_items(queue_theory["general_cards"]), unsafe_allow_html=True)
-        queue_col1, queue_col2 = st.columns([0.96, 1.04])
-        with queue_col1:
-            st.markdown('<div class="section-copy">Lectura general de teoria de colas</div>', unsafe_allow_html=True)
-            st.dataframe(queue_theory["general_insights"], use_container_width=True, hide_index=True)
-        with queue_col2:
-            st.markdown('<div class="section-copy">Peajes mas exigidos segun TEC promedio y cola maxima</div>', unsafe_allow_html=True)
-            st.dataframe(queue_theory["top_peajes"], use_container_width=True, hide_index=True)
+        st.markdown('<div class="section-copy">Lectura general de teoria de colas</div>', unsafe_allow_html=True)
+        st.dataframe(queue_theory["general_insights"], use_container_width=True, hide_index=True)
         st.markdown('<div class="section-copy">Resultados consolidados por peaje</div>', unsafe_allow_html=True)
         st.dataframe(queue_theory["by_peaje"], use_container_width=True, hide_index=True)
         st.markdown('<div class="section-copy">Resultados consolidados por caseta</div>', unsafe_allow_html=True)
@@ -2840,6 +2828,7 @@ def render_processing_outputs(processed_payload: dict[str, object], storage_back
     export_tables = processed_payload["export_tables"]
     dashboard = processed_payload["dashboard"]
     fugas_report_bytes = processed_payload["fugas_report_bytes"]
+    output_filenames = processed_payload["output_filenames"]
 
     info_col, clear_col = st.columns([4, 1])
     info_col.caption(
@@ -2865,6 +2854,53 @@ def render_processing_outputs(processed_payload: dict[str, object], storage_back
     c3.metric("Eliminados", metric_values.get("filas_eliminadas", 0))
     c4.metric("Pendientes", metric_values.get("filas_pendientes", 0))
 
+    download_col1, download_col2, download_col3, download_col4, download_col5 = st.columns(5)
+    with download_col1:
+        st.download_button(
+            "Descargar Base limpia",
+            data=processed_payload["base_limpia_bytes"],
+            file_name=output_filenames["clean_excel"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="download_base_limpia",
+        )
+    with download_col2:
+        st.download_button(
+            "Descargar resultados exactos",
+            data=processed_payload["exact_export_bytes"],
+            file_name=output_filenames["report_excel"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="download_resultados_exactos",
+        )
+    with download_col3:
+        st.download_button(
+            "Descargar resultados complementarios",
+            data=processed_payload["complementary_excel_bytes"],
+            file_name=output_filenames["extra_excel"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="download_resultados_complementarios",
+        )
+    with download_col4:
+        st.download_button(
+            "Descargar anexo DOCX",
+            data=processed_payload["report_docx_bytes"],
+            file_name=output_filenames["report_docx"],
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+            key="download_anexo_docx",
+        )
+    with download_col5:
+        st.download_button(
+            "Descargar informe modelo",
+            data=processed_payload["report_docx_model_bytes"],
+            file_name=output_filenames["report_docx_model"],
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+            key="download_informe_modelo_docx",
+        )
+
     tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         ["Dashboard", "Resumen", "Base limpia", "Eliminados", "Pendientes", "Revision placas", "Bloques"]
     )
@@ -2882,11 +2918,6 @@ def render_processing_outputs(processed_payload: dict[str, object], storage_back
         st.dataframe(export_tables["revision_placas"], use_container_width=True)
     with tab6:
         st.dataframe(export_tables["bloques_decision"], use_container_width=True)
-
-    if storage_backend.mode != "none" and can_view_history:
-        st.subheader("Historial guardado")
-        st.dataframe(storage_backend.list_recent_runs(20), use_container_width=True)
-
 
 def calcular_cola_espera_real(grupo: pd.DataFrame) -> pd.DataFrame:
     grupo = grupo.sort_values(
@@ -4631,7 +4662,17 @@ def plot_volume_by_sentido(df_chart: pd.DataFrame, title: str) -> plt.Figure | N
             edgecolor="white",
             linewidth=0.6,
         )
+        total_max = float(pivot.sum(axis=1).max()) if len(pivot.index) else 0.0
+        for y_pos, value in enumerate(values):
+            if value <= 0:
+                continue
+            x_pos = float(left.iloc[y_pos] + value / 2)
+            text_color = "white" if value >= max(40, 0.12 * total_max) else "#163564"
+            ax.text(x_pos, y_pos, f"{int(value)}", ha="center", va="center", fontsize=8.5, color=text_color, fontweight="bold")
         left = left + values
+    totals = pivot.sum(axis=1)
+    for y_pos, total in enumerate(totals):
+        ax.text(float(total), y_pos, f" {int(total)}", va="center", ha="left", fontsize=8.8, color="#163564")
     ax.set_title(title, fontsize=12, fontweight="bold", loc="left")
     ax.set_xlabel("Registros")
     ax.grid(axis="x", color="#dbe5f3", linewidth=0.8)
