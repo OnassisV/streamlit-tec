@@ -1329,6 +1329,75 @@ def consolidate_post_time_rows(df_in: pd.DataFrame, window_seconds: int) -> pd.D
     return df.drop(columns=[col for col in df.columns if col.startswith("_POST_")], errors="ignore")
 
 
+def consolidate_fragmented_flow_rows(df_in: pd.DataFrame, max_delta_seconds: int = 180) -> pd.DataFrame:
+    df = df_in.copy()
+    if df.empty:
+        return df
+
+    ref_t1 = "T1_FINAL_5TA" if "T1_FINAL_5TA" in df.columns else "T1"
+    ref_t2 = "T2_FINAL_5TA" if "T2_FINAL_5TA" in df.columns else "T2"
+    ref_t3 = "T3_FINAL_5TA" if "T3_FINAL_5TA" in df.columns else "T3"
+    if not {ref_t1, ref_t2, ref_t3}.issubset(df.columns):
+        return df
+
+    rows_to_drop: list[int] = []
+    group_cols = ["PEAJE", "CASETA", "SENTIDO", "FECHA_DIA"]
+    valid_mask = df["FECHA_DIA"].notna()
+    if not valid_mask.any():
+        return df
+
+    for _, group in df[valid_mask].sort_values(group_cols + [ref_t1, ref_t2, ref_t3, "_ORDEN_FILA"], na_position="last").groupby(group_cols, dropna=False):
+        group = group.reset_index()
+        paired_rows: set[int] = set()
+        complete_mask = group[[ref_t1, ref_t2, ref_t3]].notna().all(axis=1)
+        for idx, row in group.iterrows():
+            row_index = int(row["index"])
+            if row_index in rows_to_drop or row_index in paired_rows or complete_mask.iloc[idx]:
+                continue
+
+            t1 = row[ref_t1]
+            t2 = row[ref_t2]
+            t3 = row[ref_t3]
+            if pd.isna(t1) or pd.notna(t2) or pd.notna(t3):
+                continue
+
+            prev_complete = complete_mask.iloc[:idx].any()
+            next_complete = complete_mask.iloc[idx + 1 :].any()
+            if not (prev_complete and next_complete):
+                continue
+
+            for look_ahead in range(idx + 1, min(idx + 5, len(group))):
+                other = group.iloc[look_ahead]
+                other_index = int(other["index"])
+                if other_index in rows_to_drop or other_index in paired_rows:
+                    continue
+                if pd.notna(other[ref_t1]) or pd.isna(other[ref_t2]) or pd.isna(other[ref_t3]):
+                    continue
+                delta_seg = (other[ref_t2] - t1).total_seconds()
+                if delta_seg < 0 or delta_seg > max_delta_seconds:
+                    continue
+                is_match, confidence = classify_fragment_similarity(row.get("PLACA_FINAL"), other.get("PLACA_FINAL"), delta_seg)
+                if not is_match or confidence != "alta":
+                    continue
+
+                canonical_idx = other_index
+                source_idx = row_index
+                df.at[canonical_idx, ref_t1] = t1
+                df.at[canonical_idx, "TIEMPO_ACCION_CIERRE"] = "consolidar_fragmentacion_flujo"
+                fragment_note = (
+                    "Consolidacion por fragmentacion de flujo: una fila aporto cola y otra aporto caseta/salida; "
+                    f"fila origen {_safe_text(int(df.at[source_idx, '_ORDEN_FILA']))}, delta {_safe_text(int(delta_seg))} s."
+                )
+                df.at[canonical_idx, "TIEMPO_MOTIVO_CIERRE"] = append_note(df.at[canonical_idx, "TIEMPO_MOTIVO_CIERRE"], fragment_note)
+                rows_to_drop.append(source_idx)
+                paired_rows.add(other_index)
+                break
+
+    if rows_to_drop:
+        df = df.drop(index=sorted(set(rows_to_drop)))
+    return refresh_final_time_outputs(df)
+
+
 def refresh_final_time_outputs(df_in: pd.DataFrame) -> pd.DataFrame:
     df = df_in.copy()
     df["TIEMPOS_COMPLETOS_CIERRE"] = df[["T1_FINAL_5TA", "T2_FINAL_5TA", "T3_FINAL_5TA"]].notna().all(axis=1)
@@ -2231,6 +2300,10 @@ def run_time_cleaning(df_trabajo: pd.DataFrame, config: dict) -> dict[str, pd.Da
 
     df_final = consolidate_post_time_rows(df_final, DEDUPLICACION_DUPLICADO_CERCANO_SEGUNDOS)
     df_final = apply_short_complete_time_swaps(df_final, config)
+    df_final = consolidate_fragmented_flow_rows(df_final)
+    df_final = apply_short_complete_time_swaps(df_final, config)
+
+    df_tiempos_analisis_flujo = df_final.copy()
 
     mascara_eliminacion_borde_final = df_final["BORDE_CASETA_ELIMINAR"] & ~df_final["TIEMPOS_COMPLETOS_CIERRE"]
     df_tiempos_eliminados_borde = df_final[mascara_eliminacion_borde_final].copy()
@@ -2242,6 +2315,7 @@ def run_time_cleaning(df_trabajo: pd.DataFrame, config: dict) -> dict[str, pd.Da
     return {
         "df_tiempos_base": df_tiempos_base,
         "df_tiempos_bordes": df_tiempos_bordes,
+        "df_tiempos_analisis_flujo": df_tiempos_analisis_flujo,
         "df_tiempos_eliminados_borde": df_tiempos_eliminados_borde,
         "df_tiempos_final": df_final,
         "df_tiempos_pendientes": df_pendientes,
@@ -2262,6 +2336,7 @@ def build_export_tables(
     df_tiempos_final = time_result["df_tiempos_final"]
     df_eliminados_borde = time_result["df_tiempos_eliminados_borde"]
     df_tiempos_pendientes = time_result["df_tiempos_pendientes"]
+    flow_findings = detect_flow_fuga_candidates({"df_tiempos_bordes": time_result["df_tiempos_bordes"]})
 
     placa_meta_export = df_trabajo[
         ["_ORDEN_FILA", "PLACA", "PLACA_FINAL_DECIDIDA", "PLACA_ACCION_FINAL", "PLACA_AJUSTE_MANUAL"]
@@ -2497,6 +2572,8 @@ def build_export_tables(
         "base_limpia": base_limpia,
         "casos_eliminados": casos_eliminados,
         "casos_pendientes": casos_pendientes,
+        "fugas_flujo": flow_findings["fugas_probables"],
+        "fragmentaciones_probables": flow_findings["fragmentaciones_probables"],
         "reporte_resumen": reporte_resumen,
         "revision_placas": plate_result["df_revision_placas"],
         "bloques_decision": plate_result["df_bloques_decision"],
@@ -2557,6 +2634,11 @@ def build_exact_export_package(
     return {
         "base_limpia": base_limpia,
         "casos_eliminados": casos_eliminados,
+        "casos_pendientes": export_tables["casos_pendientes"].copy(),
+        "revision_placas": export_tables["revision_placas"].copy(),
+        "bloques_decision": export_tables["bloques_decision"].copy(),
+        "fugas_flujo": export_tables["fugas_flujo"].copy(),
+        "fragmentaciones_probables": export_tables["fragmentaciones_probables"].copy(),
         "resumen_general": resumen_general,
         "resumen_accion_realizada": resumen_accion_realizada,
         "resumen_acciones_placa": resumen_acciones_placa,
@@ -2623,6 +2705,7 @@ def build_processing_artifacts(
     dashboard = build_processing_dashboard(result["input_df"], result)
     output_filenames = derive_output_filenames(uploaded_name)
     report_label = output_filenames["report_label"]
+    exact_export_bytes = to_exact_excel_bytes(result["exact_export"])
     return {
         "input_signature": processing_signature,
         "source_name": uploaded_name,
@@ -2630,8 +2713,9 @@ def build_processing_artifacts(
         "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "export_tables": export_tables,
         "output_filenames": output_filenames,
-        "base_limpia_bytes": to_excel_bytes({"base_limpia": export_tables["base_limpia"]}),
-        "exact_export_bytes": to_exact_excel_bytes(result["exact_export"]),
+        "base_limpia_bytes": exact_export_bytes,
+        "base_limpia_only_bytes": to_excel_bytes({"base_limpia": export_tables["base_limpia"]}),
+        "exact_export_bytes": exact_export_bytes,
         "complementary_excel_bytes": to_excel_bytes(result["complementary_package"]["excel_sheets"]),
         "report_docx_bytes": to_docx_bytes(report_label, result["informe_package"]),
         "report_docx_model_bytes": to_templated_docx_bytes(report_label, result["informe_package"]),
@@ -2859,19 +2943,19 @@ def render_processing_outputs(processed_payload: dict[str, object], storage_back
         st.download_button(
             "Descargar Base limpia",
             data=processed_payload["base_limpia_bytes"],
-            file_name=output_filenames["clean_excel"],
+            file_name=output_filenames["report_excel"],
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
             key="download_base_limpia",
         )
     with download_col2:
         st.download_button(
-            "Descargar resultados exactos",
-            data=processed_payload["exact_export_bytes"],
-            file_name=output_filenames["report_excel"],
+            "Descargar solo hoja base limpia",
+            data=processed_payload["base_limpia_only_bytes"],
+            file_name=output_filenames["clean_excel"],
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
-            key="download_resultados_exactos",
+            key="download_hoja_base_limpia",
         )
     with download_col3:
         st.download_button(
@@ -2901,8 +2985,8 @@ def render_processing_outputs(processed_payload: dict[str, object], storage_back
             key="download_informe_modelo_docx",
         )
 
-    tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        ["Dashboard", "Resumen", "Base limpia", "Eliminados", "Pendientes", "Revision placas", "Bloques"]
+    tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+        ["Dashboard", "Resumen", "Base limpia", "Eliminados", "Pendientes", "Revision placas", "Bloques", "Fugas flujo", "Fragmentaciones"]
     )
     with tab0:
         render_processing_dashboard(dashboard, fugas_report_bytes, processed_payload["source_name"])
@@ -2918,6 +3002,10 @@ def render_processing_outputs(processed_payload: dict[str, object], storage_back
         st.dataframe(export_tables["revision_placas"], use_container_width=True)
     with tab6:
         st.dataframe(export_tables["bloques_decision"], use_container_width=True)
+    with tab7:
+        st.dataframe(export_tables["fugas_flujo"], use_container_width=True)
+    with tab8:
+        st.dataframe(export_tables["fragmentaciones_probables"], use_container_width=True)
 
 def calcular_cola_espera_real(grupo: pd.DataFrame) -> pd.DataFrame:
     grupo = grupo.sort_values(
@@ -3913,6 +4001,11 @@ def to_exact_excel_bytes(export_package: dict[str, pd.DataFrame]) -> bytes:
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         export_package["base_limpia"].to_excel(writer, sheet_name="base_limpia", index=False)
         export_package["casos_eliminados"].to_excel(writer, sheet_name="casos_eliminados", index=False)
+        export_package["casos_pendientes"].to_excel(writer, sheet_name="casos_pendientes", index=False)
+        export_package["revision_placas"].to_excel(writer, sheet_name="revision_placas", index=False)
+        export_package["bloques_decision"].to_excel(writer, sheet_name="bloques_decision", index=False)
+        export_package["fugas_flujo"].to_excel(writer, sheet_name="fugas_flujo", index=False)
+        export_package["fragmentaciones_probables"].to_excel(writer, sheet_name="fragmentaciones", index=False)
 
         startrow = 0
         startrow = write_report_block(
@@ -4158,16 +4251,21 @@ def build_fuga_detail(score: int, eventos_patron_placa: int, tasa_placa: float, 
 
 
 def detect_flow_fuga_candidates(time_result: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
-    df = time_result["df_tiempos_bordes"].copy()
+    df = time_result.get("df_tiempos_analisis_flujo", time_result.get("df_tiempos_final", time_result["df_tiempos_bordes"])).copy()
     if df.empty:
         empty_fugas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_FINAL", "TIPO_FUGA", "NIVEL_CONFIANZA", "SCORE_FUGA", "EVENTOS_PATRON_PLACA", "TASA_ANOMALIA_PLACA", "TASA_ANOMALIA_CONTEXTO", "DETALLE"])
         empty_fragmentos = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_T1", "PLACA_T2T3", "DELTA_SEG", "CONFIANZA", "DETALLE"])
         return {"fugas_probables": empty_fugas, "fragmentaciones_probables": empty_fragmentos}
 
-    df["T1_DASH"] = df["LLEGADA COLA"].map(normalizar_hora)
-    df["T2_DASH"] = df["LLEGADA CASETA"].map(normalizar_hora)
-    df["T3_DASH"] = df["SALIDA CASETA"].map(normalizar_hora)
+    t1_source = "LLEGADA_COLA_FINAL" if "LLEGADA_COLA_FINAL" in df.columns else "LLEGADA COLA"
+    t2_source = "LLEGADA_CASETA_FINAL" if "LLEGADA_CASETA_FINAL" in df.columns else "LLEGADA CASETA"
+    t3_source = "SALIDA_CASETA_FINAL" if "SALIDA_CASETA_FINAL" in df.columns else "SALIDA CASETA"
+    df["T1_DASH"] = df[t1_source].map(normalizar_hora)
+    df["T2_DASH"] = df[t2_source].map(normalizar_hora)
+    df["T3_DASH"] = df[t3_source].map(normalizar_hora)
     df["FECHA_DIA_DASH"] = pd.to_datetime(df["FECHA"], errors="coerce").dt.normalize()
+    if "TIEMPO_REFERENCIA" not in df.columns:
+        df["TIEMPO_REFERENCIA"] = df["T1_DASH"].combine_first(df["T2_DASH"]).combine_first(df["T3_DASH"])
     df = df.sort_values(
         ["PEAJE", "CASETA", "SENTIDO", "FECHA_DIA_DASH", "TIEMPO_REFERENCIA", "T1_DASH", "T2_DASH", "T3_DASH", "_ORDEN_FILA"],
         na_position="last",
@@ -4720,7 +4818,7 @@ def build_processing_dashboard(df_std: pd.DataFrame, result: dict[str, object]) 
     raw_df = prepare_dashboard_dataframe(df_std)
     clean_df = prepare_dashboard_dataframe(export_tables["base_limpia"])
     fugas_df = detect_raw_fugas(df_std)
-    flow_fugas = detect_flow_fuga_candidates(result["time_result"])
+    flow_fugas = detect_flow_fuga_candidates({"df_tiempos_bordes": result["time_result"]["df_tiempos_bordes"]})
     fugas_probables_df = flow_fugas["fugas_probables"]
     fragmentaciones_df = flow_fugas["fragmentaciones_probables"]
     fragmentaciones_confianza = (
