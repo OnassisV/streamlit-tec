@@ -2724,11 +2724,13 @@ def build_processing_artifacts(
     }
 
 
-def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes: bytes, source_name: str) -> None:
+def render_processing_dashboard(dashboard: dict[str, object], processed_payload: dict[str, object], source_name: str) -> None:
     overview = dashboard["overview"]
     raw_tables = dashboard["raw_tables"]
     clean_tables = dashboard["clean_tables"]
     queue_theory = dashboard["queue_theory"]
+    fugas_report_bytes = processed_payload["fugas_report_bytes"]
+    output_filenames = processed_payload["output_filenames"]
     fugas_patron_detalle = dashboard["fugas_patron_detalle"]
     fugas_probables_detalle = dashboard["fugas_probables_detalle"]
     fragmentaciones_detalle = dashboard["fragmentaciones_detalle"]
@@ -2895,49 +2897,9 @@ def render_processing_dashboard(dashboard: dict[str, object], fugas_report_bytes
 
     st.markdown('<div class="section-heading">5. Descargas disponibles</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="section-copy">Descarga el reporte complementario de fugas despues de revisar el tablero y los resultados de colas.</div>',
+        '<div class="section-copy">Descarga desde aqui el libro general, la hoja sola de base limpia, los resultados complementarios y los documentos Word del procesamiento.</div>',
         unsafe_allow_html=True,
     )
-    st.download_button(
-        "Descargar reporte de fugas",
-        data=fugas_report_bytes,
-        file_name=f"reporte_fugas_{Path(source_name).stem}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        key="download_fugas_report",
-    )
-
-
-def render_processing_outputs(processed_payload: dict[str, object], storage_backend, can_view_history: bool) -> None:
-    export_tables = processed_payload["export_tables"]
-    dashboard = processed_payload["dashboard"]
-    fugas_report_bytes = processed_payload["fugas_report_bytes"]
-    output_filenames = processed_payload["output_filenames"]
-
-    info_col, clear_col = st.columns([4, 1])
-    info_col.caption(
-        "Resultados disponibles para "
-        f"{processed_payload['source_name']}"
-        + (
-            f" | Hoja: {processed_payload['selected_sheet']}"
-            if processed_payload["selected_sheet"]
-            else ""
-        )
-        + f" | Procesado: {processed_payload['processed_at']}"
-    )
-    if clear_col.button("Limpiar resultado", use_container_width=True, key="clear_processing_result"):
-        st.session_state.pop(TEC_RESULT_STATE_KEY, None)
-        st.rerun()
-
-    resumen = export_tables["reporte_resumen"]
-    general = resumen[resumen["seccion"] == "general"]
-    c1, c2, c3, c4 = st.columns(4)
-    metric_values = {row["indicador"]: row["valor"] for _, row in general.iterrows()}
-    c1.metric("Filas entrada", metric_values.get("filas_entrada", 0))
-    c2.metric("Base limpia", metric_values.get("filas_base_limpia", 0))
-    c3.metric("Eliminados", metric_values.get("filas_eliminadas", 0))
-    c4.metric("Pendientes", metric_values.get("filas_pendientes", 0))
-
     download_col1, download_col2, download_col3, download_col4, download_col5 = st.columns(5)
     with download_col1:
         st.download_button(
@@ -2984,12 +2946,40 @@ def render_processing_outputs(processed_payload: dict[str, object], storage_back
             use_container_width=True,
             key="download_informe_modelo_docx",
         )
+    st.download_button(
+        "Descargar reporte de fugas",
+        data=fugas_report_bytes,
+        file_name=f"reporte_fugas_{Path(source_name).stem}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key="download_fugas_report",
+    )
+
+
+def render_processing_outputs(processed_payload: dict[str, object], storage_backend, can_view_history: bool) -> None:
+    export_tables = processed_payload["export_tables"]
+    dashboard = processed_payload["dashboard"]
+
+    info_col, clear_col = st.columns([4, 1])
+    info_col.caption(
+        "Resultados disponibles para "
+        f"{processed_payload['source_name']}"
+        + (
+            f" | Hoja: {processed_payload['selected_sheet']}"
+            if processed_payload["selected_sheet"]
+            else ""
+        )
+        + f" | Procesado: {processed_payload['processed_at']}"
+    )
+    if clear_col.button("Limpiar resultado", use_container_width=True, key="clear_processing_result"):
+        st.session_state.pop(TEC_RESULT_STATE_KEY, None)
+        st.rerun()
 
     tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
         ["Dashboard", "Resumen", "Base limpia", "Eliminados", "Pendientes", "Revision placas", "Bloques", "Fugas flujo", "Fragmentaciones"]
     )
     with tab0:
-        render_processing_dashboard(dashboard, fugas_report_bytes, processed_payload["source_name"])
+        render_processing_dashboard(dashboard, processed_payload, processed_payload["source_name"])
     with tab1:
         st.dataframe(export_tables["reporte_resumen"], use_container_width=True)
     with tab2:
@@ -3757,16 +3747,27 @@ def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
     }
 
 
-def build_complementary_package(df_resultados: pd.DataFrame, df_export_base: pd.DataFrame) -> dict[str, object]:
+def build_complementary_package(
+    df_resultados: pd.DataFrame,
+    df_export_base: pd.DataFrame,
+    df_original: pd.DataFrame,
+    fugas_flujo: pd.DataFrame,
+    fragmentaciones_probables: pd.DataFrame,
+) -> dict[str, object]:
     resumen_complementario = pd.DataFrame(columns=["indicador", "valor"])
     descriptivos_peaje_sentido = pd.DataFrame(columns=["PEAJE", "SENTIDO", "indicador", "casos", "promedio", "mediana", "p85", "p95", "maximo"])
     descriptivos_caseta = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "indicador", "casos", "promedio", "mediana", "p85", "p95", "maximo"])
     cumplimiento_3min_peaje = pd.DataFrame(columns=["PEAJE", "SENTIDO", "vehiculos", "dentro_3_min", "fuera_3_min", "tec_promedio_min", "tec_p95_min", "tec_max_min", "pct_dentro_3_min"])
     cumplimiento_3min_caseta = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "vehiculos", "dentro_3_min", "fuera_3_min", "tec_promedio_min", "tec_p95_min", "tec_max_min", "pct_dentro_3_min"])
+    fugas_por_peaje = pd.DataFrame(columns=["PEAJE", "REGISTROS_DATA", "FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"])
+    fugas_por_caseta = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "REGISTROS_DATA", "FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"])
     top_casetas_tec = pd.DataFrame(columns=descriptivos_caseta.columns)
     top_bloques_30min = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "BLOQUE_30MIN", "vehiculos", "tec_promedio_min", "tec_p95_min", "cola_promedio_veh", "cola_maxima_veh"])
     acciones_por_peaje = pd.DataFrame(columns=["PEAJE", "ACCION_REALIZADA", "filas"])
     texto_sugerido_extra = pd.DataFrame({"Texto sugerido": ["No hay datos suficientes para generar resultados complementarios."]})
+    fuga_rate_tables = build_fuga_rate_tables(df_original, fugas_flujo, fragmentaciones_probables)
+    fugas_por_peaje = fuga_rate_tables["by_peaje"].copy()
+    fugas_por_caseta = fuga_rate_tables["by_caseta"].copy()
 
     if not df_resultados.empty:
         df_resultados_extra = df_resultados.copy()
@@ -3839,6 +3840,14 @@ def build_complementary_package(df_resultados: pd.DataFrame, df_export_base: pd.
         cumplimiento_3min_peaje[["tec_promedio_min", "tec_p95_min", "tec_max_min"]] = cumplimiento_3min_peaje[
             ["tec_promedio_min", "tec_p95_min", "tec_max_min"]
         ].round(2)
+        cumplimiento_3min_peaje = cumplimiento_3min_peaje.merge(
+            fugas_por_peaje[["PEAJE", "FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]],
+            on=["PEAJE"],
+            how="left",
+        )
+        cumplimiento_3min_peaje[["FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]] = cumplimiento_3min_peaje[["FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]].fillna(0)
+        cumplimiento_3min_peaje["FUGAS_FLUJO"] = cumplimiento_3min_peaje["FUGAS_FLUJO"].astype(int)
+        cumplimiento_3min_peaje["FRAGMENTACIONES_FLUJO"] = cumplimiento_3min_peaje["FRAGMENTACIONES_FLUJO"].astype(int)
 
         cumplimiento_3min_caseta = (
             df_resultados_extra.groupby(["PEAJE", "CASETA", "SENTIDO"], dropna=False)
@@ -3858,6 +3867,14 @@ def build_complementary_package(df_resultados: pd.DataFrame, df_export_base: pd.
         cumplimiento_3min_caseta[["tec_promedio_min", "tec_p95_min", "tec_max_min"]] = cumplimiento_3min_caseta[
             ["tec_promedio_min", "tec_p95_min", "tec_max_min"]
         ].round(2)
+        cumplimiento_3min_caseta = cumplimiento_3min_caseta.merge(
+            fugas_por_caseta[["PEAJE", "CASETA", "SENTIDO", "FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]],
+            on=["PEAJE", "CASETA", "SENTIDO"],
+            how="left",
+        )
+        cumplimiento_3min_caseta[["FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]] = cumplimiento_3min_caseta[["FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]].fillna(0)
+        cumplimiento_3min_caseta["FUGAS_FLUJO"] = cumplimiento_3min_caseta["FUGAS_FLUJO"].astype(int)
+        cumplimiento_3min_caseta["FRAGMENTACIONES_FLUJO"] = cumplimiento_3min_caseta["FRAGMENTACIONES_FLUJO"].astype(int)
 
         top_casetas_tec = descriptivos_caseta.head(10).copy()
 
@@ -3921,6 +3938,8 @@ def build_complementary_package(df_resultados: pd.DataFrame, df_export_base: pd.
         "desc_caseta_tec": descriptivos_caseta,
         "cumpl_3min_peaje": cumplimiento_3min_peaje,
         "cumpl_3min_caseta": cumplimiento_3min_caseta,
+        "fugas_peaje": fugas_por_peaje,
+        "fugas_caseta": fugas_por_caseta,
         "top_casetas_tec": top_casetas_tec,
         "top_bloques_30m": top_bloques_30min,
         "acciones_por_peaje": acciones_por_peaje,
@@ -3996,6 +4015,114 @@ def write_report_block(
     return startrow + len(table) + 5
 
 
+def apply_standard_worksheet_format(worksheet, df_sheet: pd.DataFrame | None = None, header_row: int = 1, freeze_panes: str = "A2") -> None:
+    header_fill = PatternFill(fill_type="solid", fgColor="163564")
+    header_font = Font(color="FFFFFF", bold=True)
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    body_alignment = Alignment(vertical="top", wrap_text=True)
+    thin_border = Border(
+        left=Side(style="thin", color="D7E1F0"),
+        right=Side(style="thin", color="D7E1F0"),
+        top=Side(style="thin", color="D7E1F0"),
+        bottom=Side(style="thin", color="D7E1F0"),
+    )
+
+    worksheet.freeze_panes = freeze_panes
+    worksheet.auto_filter.ref = worksheet.dimensions
+    worksheet.sheet_view.showGridLines = False
+
+    for cell in worksheet[header_row]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+        cell.border = thin_border
+
+    for row in worksheet.iter_rows(min_row=header_row + 1):
+        for cell in row:
+            cell.alignment = body_alignment
+            cell.border = thin_border
+
+    if df_sheet is not None:
+        for col_idx, column_name in enumerate(df_sheet.columns, start=1):
+            series = df_sheet[column_name]
+            value_lengths = [len(str(column_name))]
+            if not series.empty:
+                value_lengths.extend(
+                    series.map(lambda value: max(len(part) for part in str(value).splitlines()) if pd.notna(value) else 0).tolist()
+                )
+            adjusted_width = min(max(value_lengths) + 2, 50)
+            adjusted_width = max(adjusted_width, 10)
+            worksheet.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
+    else:
+        for col_idx in range(1, worksheet.max_column + 1):
+            max_length = 10
+            for row in worksheet.iter_rows(min_col=col_idx, max_col=col_idx, values_only=True):
+                value = row[0]
+                if value is None:
+                    continue
+                max_length = max(max_length, max(len(part) for part in str(value).splitlines()) + 2)
+            worksheet.column_dimensions[get_column_letter(col_idx)].width = min(max_length, 50)
+
+    worksheet.row_dimensions[header_row].height = 24
+
+
+def apply_report_summary_format(worksheet) -> None:
+    title_fill = PatternFill(fill_type="solid", fgColor="0F3D91")
+    header_fill = PatternFill(fill_type="solid", fgColor="163564")
+    title_font = Font(color="FFFFFF", bold=True)
+    header_font = Font(color="FFFFFF", bold=True)
+    title_alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    body_alignment = Alignment(vertical="top", wrap_text=True)
+    thin_border = Border(
+        left=Side(style="thin", color="D7E1F0"),
+        right=Side(style="thin", color="D7E1F0"),
+        top=Side(style="thin", color="D7E1F0"),
+        bottom=Side(style="thin", color="D7E1F0"),
+    )
+
+    worksheet.sheet_view.showGridLines = False
+    worksheet.freeze_panes = "A3"
+
+    previous_blank = True
+    for row_idx in range(1, worksheet.max_row + 1):
+        values = [worksheet.cell(row=row_idx, column=col_idx).value for col_idx in range(1, worksheet.max_column + 1)]
+        non_empty = [value for value in values if value not in (None, "")]
+        if not non_empty:
+            previous_blank = True
+            continue
+
+        is_title_row = len(non_empty) == 1 and values[0] not in (None, "")
+        is_header_row = previous_blank and len(non_empty) > 1
+
+        for col_idx in range(1, worksheet.max_column + 1):
+            cell = worksheet.cell(row=row_idx, column=col_idx)
+            cell.border = thin_border
+            if is_title_row:
+                cell.fill = title_fill
+                cell.font = title_font
+                cell.alignment = title_alignment
+            elif is_header_row:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = header_alignment
+            else:
+                cell.alignment = body_alignment
+
+        if is_title_row:
+            worksheet.row_dimensions[row_idx].height = 22
+        previous_blank = False
+
+    for col_idx in range(1, worksheet.max_column + 1):
+        max_length = 10
+        for row in worksheet.iter_rows(min_col=col_idx, max_col=col_idx, values_only=True):
+            value = row[0]
+            if value is None:
+                continue
+            max_length = max(max_length, max(len(part) for part in str(value).splitlines()) + 2)
+        worksheet.column_dimensions[get_column_letter(col_idx)].width = min(max_length, 50)
+
+
 def to_exact_excel_bytes(export_package: dict[str, pd.DataFrame]) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -4043,6 +4170,14 @@ def to_exact_excel_bytes(export_package: dict[str, pd.DataFrame]) -> bytes:
             export_package["resumen_eliminados"],
             startrow,
         )
+        apply_standard_worksheet_format(writer.book["base_limpia"], export_package["base_limpia"])
+        apply_standard_worksheet_format(writer.book["casos_eliminados"], export_package["casos_eliminados"])
+        apply_standard_worksheet_format(writer.book["casos_pendientes"], export_package["casos_pendientes"])
+        apply_standard_worksheet_format(writer.book["revision_placas"], export_package["revision_placas"])
+        apply_standard_worksheet_format(writer.book["bloques_decision"], export_package["bloques_decision"])
+        apply_standard_worksheet_format(writer.book["fugas_flujo"], export_package["fugas_flujo"])
+        apply_standard_worksheet_format(writer.book["fragmentaciones"], export_package["fragmentaciones_probables"])
+        apply_report_summary_format(writer.book["reporte_resumen"])
     output.seek(0)
     return output.getvalue()
 
@@ -4253,8 +4388,8 @@ def build_fuga_detail(score: int, eventos_patron_placa: int, tasa_placa: float, 
 def detect_flow_fuga_candidates(time_result: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     df = time_result.get("df_tiempos_analisis_flujo", time_result.get("df_tiempos_final", time_result["df_tiempos_bordes"])).copy()
     if df.empty:
-        empty_fugas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_FINAL", "TIPO_FUGA", "NIVEL_CONFIANZA", "SCORE_FUGA", "EVENTOS_PATRON_PLACA", "TASA_ANOMALIA_PLACA", "TASA_ANOMALIA_CONTEXTO", "DETALLE"])
-        empty_fragmentos = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_T1", "PLACA_T2T3", "DELTA_SEG", "CONFIANZA", "DETALLE"])
+        empty_fugas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_FINAL", "TIPO_FUGA", "NIVEL_CONFIANZA", "ES_FUGA_FUERTE", "ES_FUGA_PROBABLE", "ES_INCOMPLETO_NO_CONCLUYENTE", "SCORE_FUGA", "EVENTOS_PATRON_PLACA", "TASA_ANOMALIA_PLACA", "TASA_ANOMALIA_CONTEXTO", "DETALLE"])
+        empty_fragmentos = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_T1", "PLACA_T2T3", "DELTA_SEG", "CONFIANZA", "ES_ALTA_CONFIANZA", "DETALLE"])
         return {"fugas_probables": empty_fugas, "fragmentaciones_probables": empty_fragmentos}
 
     t1_source = "LLEGADA_COLA_FINAL" if "LLEGADA_COLA_FINAL" in df.columns else "LLEGADA COLA"
@@ -4441,6 +4576,9 @@ def detect_flow_fuga_candidates(time_result: dict[str, pd.DataFrame]) -> dict[st
         )
         clasificaciones.columns = ["TIPO_FUGA", "NIVEL_CONFIANZA"]
         df_fugas[["TIPO_FUGA", "NIVEL_CONFIANZA"]] = clasificaciones
+        df_fugas["ES_FUGA_FUERTE"] = df_fugas["TIPO_FUGA"].astype(str).str.startswith("fuga_fuerte_")
+        df_fugas["ES_FUGA_PROBABLE"] = df_fugas["TIPO_FUGA"].astype(str).str.startswith("fuga_probable_")
+        df_fugas["ES_INCOMPLETO_NO_CONCLUYENTE"] = df_fugas["TIPO_FUGA"].astype(str).str.startswith("incompleto_no_concluyente")
         df_fugas["DETALLE"] = df_fugas.apply(
             lambda row: build_fuga_detail(
                 int(row["SCORE_FUGA"]),
@@ -4459,6 +4597,9 @@ def detect_flow_fuga_candidates(time_result: dict[str, pd.DataFrame]) -> dict[st
                 "PLACA_FINAL",
                 "TIPO_FUGA",
                 "NIVEL_CONFIANZA",
+                "ES_FUGA_FUERTE",
+                "ES_FUGA_PROBABLE",
+                "ES_INCOMPLETO_NO_CONCLUYENTE",
                 "SCORE_FUGA",
                 "EVENTOS_PATRON_PLACA",
                 "TASA_ANOMALIA_PLACA",
@@ -4467,13 +4608,14 @@ def detect_flow_fuga_candidates(time_result: dict[str, pd.DataFrame]) -> dict[st
             ]
         ].sort_values(["TIPO_FUGA", "SCORE_FUGA", "PEAJE", "CASETA", "FECHA", "PLACA_FINAL"], ascending=[True, False, True, True, True, True]).reset_index(drop=True)
     else:
-        df_fugas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_FINAL", "TIPO_FUGA", "NIVEL_CONFIANZA", "SCORE_FUGA", "EVENTOS_PATRON_PLACA", "TASA_ANOMALIA_PLACA", "TASA_ANOMALIA_CONTEXTO", "DETALLE"])
+        df_fugas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_FINAL", "TIPO_FUGA", "NIVEL_CONFIANZA", "ES_FUGA_FUERTE", "ES_FUGA_PROBABLE", "ES_INCOMPLETO_NO_CONCLUYENTE", "SCORE_FUGA", "EVENTOS_PATRON_PLACA", "TASA_ANOMALIA_PLACA", "TASA_ANOMALIA_CONTEXTO", "DETALLE"])
 
     df_fragmentos = pd.DataFrame(fragmentaciones_probables)
     if not df_fragmentos.empty:
+        df_fragmentos["ES_ALTA_CONFIANZA"] = df_fragmentos["CONFIANZA"].eq("alta")
         df_fragmentos = df_fragmentos.sort_values(["PEAJE", "CASETA", "FECHA", "DELTA_SEG"]).reset_index(drop=True)
     else:
-        df_fragmentos = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_T1", "PLACA_T2T3", "DELTA_SEG", "CONFIANZA", "DETALLE"])
+        df_fragmentos = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FECHA", "PLACA_T1", "PLACA_T2T3", "DELTA_SEG", "CONFIANZA", "ES_ALTA_CONFIANZA", "DETALLE"])
 
     return {
         "fugas_probables": df_fugas,
@@ -4558,12 +4700,131 @@ def build_processing_flow_diagram_html() -> str:
     )
 
 
-def build_queue_theory_dashboard(df_resultados: pd.DataFrame) -> dict[str, object]:
+def build_fuga_rate_tables(
+    df_original: pd.DataFrame,
+    fugas_flujo: pd.DataFrame,
+    fragmentaciones_probables: pd.DataFrame | None = None,
+) -> dict[str, pd.DataFrame]:
+    by_peaje_columns = [
+        "PEAJE",
+        "REGISTROS_DATA",
+        "FUGAS_FLUJO",
+        "FUGAS_FLUJO_%",
+        "FRAGMENTACIONES_FLUJO",
+        "FRAGMENTACIONES_FLUJO_%",
+    ]
+    by_caseta_columns = [
+        "PEAJE",
+        "CASETA",
+        "SENTIDO",
+        "REGISTROS_DATA",
+        "FUGAS_FLUJO",
+        "FUGAS_FLUJO_%",
+        "FRAGMENTACIONES_FLUJO",
+        "FRAGMENTACIONES_FLUJO_%",
+    ]
+    if df_original.empty:
+        return {
+            "by_peaje": pd.DataFrame(columns=by_peaje_columns),
+            "by_caseta": pd.DataFrame(columns=by_caseta_columns),
+        }
+
+    base = df_original.copy()
+    base["PEAJE"] = base["PEAJE"].map(format_dashboard_dimension)
+    base["CASETA"] = base["CASETA"].map(format_dashboard_dimension)
+    base["SENTIDO"] = base["SENTIDO"].map(format_dashboard_dimension)
+
+    registros_peaje = (
+        base.groupby(["PEAJE"], dropna=False)
+        .size()
+        .rename("REGISTROS_DATA")
+        .reset_index()
+    )
+    registros_caseta = (
+        base.groupby(["PEAJE", "CASETA", "SENTIDO"], dropna=False)
+        .size()
+        .rename("REGISTROS_DATA")
+        .reset_index()
+    )
+
+    fugas_operativas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO"])
+    if not fugas_flujo.empty:
+        fugas_operativas = fugas_flujo[
+            fugas_flujo["TIPO_FUGA"].astype(str).str.startswith(("fuga_fuerte_", "fuga_probable_"))
+        ][["PEAJE", "CASETA", "SENTIDO"]].copy()
+
+    if fugas_operativas.empty:
+        fugas_peaje = pd.DataFrame(columns=["PEAJE", "FUGAS_FLUJO"])
+        fugas_caseta = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FUGAS_FLUJO"])
+    else:
+        fugas_peaje = (
+            fugas_operativas.groupby(["PEAJE"], dropna=False)
+            .size()
+            .rename("FUGAS_FLUJO")
+            .reset_index()
+        )
+        fugas_caseta = (
+            fugas_operativas.groupby(["PEAJE", "CASETA", "SENTIDO"], dropna=False)
+            .size()
+            .rename("FUGAS_FLUJO")
+            .reset_index()
+        )
+
+    fragmentaciones_operativas = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO"])
+    if fragmentaciones_probables is not None and not fragmentaciones_probables.empty:
+        fragmentaciones_operativas = fragmentaciones_probables[["PEAJE", "CASETA", "SENTIDO"]].copy()
+
+    if fragmentaciones_operativas.empty:
+        fragmentaciones_peaje = pd.DataFrame(columns=["PEAJE", "FRAGMENTACIONES_FLUJO"])
+        fragmentaciones_caseta = pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FRAGMENTACIONES_FLUJO"])
+    else:
+        fragmentaciones_peaje = (
+            fragmentaciones_operativas.groupby(["PEAJE"], dropna=False)
+            .size()
+            .rename("FRAGMENTACIONES_FLUJO")
+            .reset_index()
+        )
+        fragmentaciones_caseta = (
+            fragmentaciones_operativas.groupby(["PEAJE", "CASETA", "SENTIDO"], dropna=False)
+            .size()
+            .rename("FRAGMENTACIONES_FLUJO")
+            .reset_index()
+        )
+
+    by_peaje = registros_peaje.merge(fugas_peaje, on=["PEAJE"], how="left")
+    by_caseta = registros_caseta.merge(fugas_caseta, on=["PEAJE", "CASETA", "SENTIDO"], how="left")
+    by_peaje = by_peaje.merge(fragmentaciones_peaje, on=["PEAJE"], how="left")
+    by_caseta = by_caseta.merge(fragmentaciones_caseta, on=["PEAJE", "CASETA", "SENTIDO"], how="left")
+    for frame in [by_peaje, by_caseta]:
+        frame["FUGAS_FLUJO"] = frame["FUGAS_FLUJO"].fillna(0).astype(int)
+        frame["FUGAS_FLUJO_%"] = (100 * frame["FUGAS_FLUJO"] / frame["REGISTROS_DATA"]).round(2)
+        frame["FRAGMENTACIONES_FLUJO"] = frame["FRAGMENTACIONES_FLUJO"].fillna(0).astype(int)
+        frame["FRAGMENTACIONES_FLUJO_%"] = (100 * frame["FRAGMENTACIONES_FLUJO"] / frame["REGISTROS_DATA"]).round(2)
+
+    by_peaje = by_peaje.sort_values(
+        ["FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO_%", "FUGAS_FLUJO", "REGISTROS_DATA"],
+        ascending=[False, False, False, False],
+    ).reset_index(drop=True)
+    by_caseta = by_caseta.sort_values(
+        ["FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO_%", "FUGAS_FLUJO", "REGISTROS_DATA"],
+        ascending=[False, False, False, False],
+    ).reset_index(drop=True)
+    return {
+        "by_peaje": by_peaje[by_peaje_columns],
+        "by_caseta": by_caseta[by_caseta_columns],
+    }
+
+
+def build_queue_theory_dashboard(df_resultados: pd.DataFrame, fuga_rate_tables: dict[str, pd.DataFrame] | None = None) -> dict[str, object]:
     by_peaje_columns = [
         "PEAJE",
         "VEHICULOS",
         "CASETAS",
         "SENTIDOS",
+        "FUGAS_FLUJO",
+        "FUGAS_FLUJO_%",
+        "FRAGMENTACIONES_FLUJO",
+        "FRAGMENTACIONES_FLUJO_%",
         "TEC_PROMEDIO_MIN",
         "TEC_P95_MIN",
         "TEC_MAX_MIN",
@@ -4577,6 +4838,10 @@ def build_queue_theory_dashboard(df_resultados: pd.DataFrame) -> dict[str, objec
         "CASETA",
         "SENTIDO",
         "VEHICULOS",
+        "FUGAS_FLUJO",
+        "FUGAS_FLUJO_%",
+        "FRAGMENTACIONES_FLUJO",
+        "FRAGMENTACIONES_FLUJO_%",
         "TEC_PROMEDIO_MIN",
         "TEC_P95_MIN",
         "TEC_MAX_MIN",
@@ -4608,6 +4873,15 @@ def build_queue_theory_dashboard(df_resultados: pd.DataFrame) -> dict[str, objec
     df_queue["PEAJE"] = df_queue["PEAJE"].map(format_dashboard_dimension)
     df_queue["CASETA"] = df_queue["CASETA"].map(format_dashboard_dimension)
     df_queue["SENTIDO"] = df_queue["SENTIDO"].map(format_dashboard_dimension)
+    fuga_rate_tables = fuga_rate_tables or {}
+    fuga_by_peaje = fuga_rate_tables.get(
+        "by_peaje",
+        pd.DataFrame(columns=["PEAJE", "FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]),
+    )
+    fuga_by_caseta = fuga_rate_tables.get(
+        "by_caseta",
+        pd.DataFrame(columns=["PEAJE", "CASETA", "SENTIDO", "FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]),
+    )
 
     overall_pct_3 = round(100 * (df_queue["T_TEC_FINAL_MINUTOS"] <= 3).mean(), 2) if len(df_queue) else 0.0
     general_cards = [
@@ -4640,6 +4914,14 @@ def build_queue_theory_dashboard(df_resultados: pd.DataFrame) -> dict[str, objec
     )
     by_peaje["ATENCION_<=3_MIN_%"] = (100 * by_peaje["DENTRO_3_MIN"] / by_peaje["VEHICULOS"]).round(2)
     by_peaje = by_peaje.drop(columns=["DENTRO_3_MIN"])
+    by_peaje = by_peaje.merge(
+        fuga_by_peaje[["PEAJE", "FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]],
+        on=["PEAJE"],
+        how="left",
+    )
+    by_peaje[["FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]] = by_peaje[["FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]].fillna(0)
+    by_peaje["FUGAS_FLUJO"] = by_peaje["FUGAS_FLUJO"].astype(int)
+    by_peaje["FRAGMENTACIONES_FLUJO"] = by_peaje["FRAGMENTACIONES_FLUJO"].astype(int)
     by_peaje[[
         "TEC_PROMEDIO_MIN",
         "TEC_P95_MIN",
@@ -4671,6 +4953,14 @@ def build_queue_theory_dashboard(df_resultados: pd.DataFrame) -> dict[str, objec
     )
     by_caseta["ATENCION_<=3_MIN_%"] = (100 * by_caseta["DENTRO_3_MIN"] / by_caseta["VEHICULOS"]).round(2)
     by_caseta = by_caseta.drop(columns=["DENTRO_3_MIN"])
+    by_caseta = by_caseta.merge(
+        fuga_by_caseta[["PEAJE", "CASETA", "SENTIDO", "FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]],
+        on=["PEAJE", "CASETA", "SENTIDO"],
+        how="left",
+    )
+    by_caseta[["FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]] = by_caseta[["FUGAS_FLUJO", "FUGAS_FLUJO_%", "FRAGMENTACIONES_FLUJO", "FRAGMENTACIONES_FLUJO_%"]].fillna(0)
+    by_caseta["FUGAS_FLUJO"] = by_caseta["FUGAS_FLUJO"].astype(int)
+    by_caseta["FRAGMENTACIONES_FLUJO"] = by_caseta["FRAGMENTACIONES_FLUJO"].astype(int)
     by_caseta[[
         "TEC_PROMEDIO_MIN",
         "TEC_P95_MIN",
@@ -4821,6 +5111,7 @@ def build_processing_dashboard(df_std: pd.DataFrame, result: dict[str, object]) 
     flow_fugas = detect_flow_fuga_candidates({"df_tiempos_bordes": result["time_result"]["df_tiempos_bordes"]})
     fugas_probables_df = flow_fugas["fugas_probables"]
     fragmentaciones_df = flow_fugas["fragmentaciones_probables"]
+    fuga_rate_tables = build_fuga_rate_tables(df_std, fugas_probables_df, fragmentaciones_df)
     fragmentaciones_confianza = (
         fragmentaciones_df["CONFIANZA"].value_counts().rename_axis("CONFIANZA").reset_index(name="FILAS")
         if not fragmentaciones_df.empty
@@ -4885,7 +5176,7 @@ def build_processing_dashboard(df_std: pd.DataFrame, result: dict[str, object]) 
         "overview": overview,
         "raw_tables": build_volume_tables(raw_df),
         "clean_tables": build_volume_tables(clean_df),
-        "queue_theory": build_queue_theory_dashboard(df_resultados_queue),
+        "queue_theory": build_queue_theory_dashboard(df_resultados_queue, fuga_rate_tables),
         "fugas_patron_detalle": fugas_df,
         "fugas_probables_detalle": fugas_probables_df,
         "fragmentaciones_detalle": fragmentaciones_df,
@@ -4949,6 +5240,9 @@ def process_pipeline(df_std: pd.DataFrame, config: dict, manual_rules_df: pd.Dat
     complementary_package = build_complementary_package(
         informe_package["df_resultados"],
         export_tables["export_base_detalle"],
+        df_std,
+        export_tables["fugas_flujo"],
+        export_tables["fragmentaciones_probables"],
     )
     return {
         "input_df": df_std,
@@ -5431,7 +5725,6 @@ def render_processing_page(storage_backend, current_user: dict | None) -> None:
     if not uploaded_file:
         if storage_backend.mode != "none" and can_view_history:
             st.info(f"Persistencia activa: `{storage_backend.mode}`")
-            st.dataframe(storage_backend.list_recent_runs(10), use_container_width=True)
         else:
             st.info("Sube una base para comenzar.")
         return
