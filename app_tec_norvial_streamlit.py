@@ -2621,28 +2621,17 @@ def build_processing_artifacts(
     result: dict[str, object],
 ) -> dict[str, object]:
     export_tables = result["export_tables"]
-    exact_export = result["exact_export"]
-    informe_package = result["informe_package"]
-    complementary_package = result["complementary_package"]
-    output_names = derive_output_filenames(uploaded_name)
     return {
         "input_signature": processing_signature,
         "source_name": uploaded_name,
         "selected_sheet": selected_sheet,
         "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "export_tables": export_tables,
-        "output_names": output_names,
-        "excel_bytes": to_exact_excel_bytes(exact_export),
-        "report_excel_bytes": to_excel_bytes(informe_package["excel_sheets"]),
-        "report_docx_bytes": to_docx_bytes(output_names["report_label"], informe_package),
-        "report_docx_model_bytes": to_templated_docx_bytes(output_names["report_label"], informe_package),
-        "complementary_excel_bytes": to_excel_bytes(complementary_package["excel_sheets"]),
     }
 
 
 def render_processing_outputs(processed_payload: dict[str, object], storage_backend, can_view_history: bool) -> None:
     export_tables = processed_payload["export_tables"]
-    output_names = processed_payload["output_names"]
 
     info_col, clear_col = st.columns([4, 1])
     info_col.caption(
@@ -2667,42 +2656,6 @@ def render_processing_outputs(processed_payload: dict[str, object], storage_back
     c2.metric("Base limpia", metric_values.get("filas_base_limpia", 0))
     c3.metric("Eliminados", metric_values.get("filas_eliminadas", 0))
     c4.metric("Pendientes", metric_values.get("filas_pendientes", 0))
-
-    st.caption("Descarga principal: usa 'Informe final modelo 2022'. El Word de tablas es solo un anexo auxiliar de trabajo.")
-
-    st.download_button(
-        "Descargar Informe final modelo 2022",
-        data=processed_payload["report_docx_model_bytes"],
-        file_name=output_names["report_docx_model"],
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        use_container_width=True,
-        key="download_model_docx",
-    )
-
-    st.download_button(
-        "Descargar Excel",
-        data=processed_payload["excel_bytes"],
-        file_name=output_names["clean_excel"],
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        key="download_clean_excel",
-    )
-    st.download_button(
-        "Descargar Resultados Informe",
-        data=processed_payload["report_excel_bytes"],
-        file_name=output_names["report_excel"],
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        key="download_report_excel",
-    )
-    st.download_button(
-        "Descargar Resultados Complementarios",
-        data=processed_payload["complementary_excel_bytes"],
-        file_name=output_names["extra_excel"],
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        key="download_complementary_excel",
-    )
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         ["Resumen", "Base limpia", "Eliminados", "Pendientes", "Revision placas", "Bloques"]
