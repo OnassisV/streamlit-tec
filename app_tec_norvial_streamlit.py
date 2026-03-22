@@ -6,6 +6,7 @@ from io import BytesIO
 import json
 from pathlib import Path
 import re
+import subprocess
 import unicodedata
 import zipfile
 
@@ -128,6 +129,21 @@ MODULE_PLACEHOLDERS = {
         ],
     },
 }
+
+
+@st.cache_data(show_spinner=False)
+def get_runtime_version_label() -> str:
+    repo_dir = Path(__file__).parent
+    try:
+        short_sha = subprocess.run(
+            ["git", "-C", str(repo_dir), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except Exception:
+        short_sha = "sin-git"
+    return f"{PROCESSING_SIGNATURE_VERSION} | {short_sha}"
 
 EXPECTED_COLUMNS = [
     "PEAJE",
@@ -2361,6 +2377,63 @@ def build_export_tables(
     )
     df_export_base["PLACA_PENDIENTE_REVISION"] = df_export_base["PLACA_ACCION_FINAL"].eq("mantener_observada")
 
+    if not flow_findings["fugas_probables"].empty:
+        fuga_detail = flow_findings["fugas_probables"].copy()
+        fuga_detail["_FUGA_PRIORIDAD"] = fuga_detail["TIPO_FUGA"].astype(str).map(
+            lambda value: 0
+            if value.startswith("fuga_fuerte_")
+            else 1
+            if value.startswith("fuga_probable_")
+            else 2
+            if value.startswith("incompleto_no_concluyente")
+            else 9
+        )
+        fuga_detail["_FUGA_FECHA_KEY"] = pd.to_datetime(fuga_detail["FECHA"], errors="coerce").dt.normalize()
+        fuga_detail = fuga_detail.sort_values(
+            ["_FUGA_PRIORIDAD", "SCORE_FUGA", "PEAJE", "CASETA", "SENTIDO", "_FUGA_FECHA_KEY", "PLACA_FINAL"],
+            ascending=[True, False, True, True, True, True, True],
+        )
+        fuga_detail = fuga_detail.drop_duplicates(
+            subset=["PEAJE", "CASETA", "SENTIDO", "_FUGA_FECHA_KEY", "PLACA_FINAL"],
+            keep="first",
+        )
+
+        df_export_base["_FUGA_FECHA_KEY"] = pd.to_datetime(df_export_base["FECHA"], errors="coerce").dt.normalize()
+        df_export_base = df_export_base.merge(
+            fuga_detail[
+                [
+                    "PEAJE",
+                    "CASETA",
+                    "SENTIDO",
+                    "_FUGA_FECHA_KEY",
+                    "PLACA_FINAL",
+                    "TIPO_FUGA",
+                    "NIVEL_CONFIANZA",
+                    "SCORE_FUGA",
+                    "DETALLE",
+                    "ES_FUGA_FUERTE",
+                    "ES_FUGA_PROBABLE",
+                    "ES_INCOMPLETO_NO_CONCLUYENTE",
+                ]
+            ],
+            on=["PEAJE", "CASETA", "SENTIDO", "_FUGA_FECHA_KEY", "PLACA_FINAL"],
+            how="left",
+        )
+        df_export_base = df_export_base.drop(columns=["_FUGA_FECHA_KEY"])
+    else:
+        df_export_base["TIPO_FUGA"] = pd.NA
+        df_export_base["NIVEL_CONFIANZA"] = pd.NA
+        df_export_base["SCORE_FUGA"] = pd.NA
+        df_export_base["DETALLE"] = pd.NA
+        df_export_base["ES_FUGA_FUERTE"] = False
+        df_export_base["ES_FUGA_PROBABLE"] = False
+        df_export_base["ES_INCOMPLETO_NO_CONCLUYENTE"] = False
+
+    df_export_base["CLASIFICACION_FUGA_FLUJO"] = df_export_base["TIPO_FUGA"].fillna("sin_hallazgo")
+    df_export_base["NIVEL_FUGA_FLUJO"] = df_export_base["NIVEL_CONFIANZA"].fillna("sin_hallazgo")
+    df_export_base["FUGA_FLUJO_IDENTIFICADA"] = df_export_base["TIPO_FUGA"].notna()
+    df_export_base = df_export_base.rename(columns={"DETALLE": "DETALLE_FUGA_FLUJO"})
+
     casos_excluidos_contraste = pd.DataFrame()
     if config.get("modo_contraste_estricto", False):
         mascara_exclusion_contraste = df_export_base["TIEMPOS_COMPLETOS_CIERRE"] & df_export_base["TIEMPO_ACCION_FINAL"].isin(
@@ -2422,6 +2495,14 @@ def build_export_tables(
             "T_TEC_FINAL_TXT",
             "T_TEC_FINAL_SEGUNDOS",
             "T_TEC_FINAL_MINUTOS",
+            "FUGA_FLUJO_IDENTIFICADA",
+            "CLASIFICACION_FUGA_FLUJO",
+            "NIVEL_FUGA_FLUJO",
+            "SCORE_FUGA",
+            "DETALLE_FUGA_FLUJO",
+            "ES_FUGA_FUERTE",
+            "ES_FUGA_PROBABLE",
+            "ES_INCOMPLETO_NO_CONCLUYENTE",
             "ACCION_REALIZADA",
         ]
     ].rename(
@@ -2439,6 +2520,7 @@ def build_export_tables(
             "T_TEC_FINAL_TXT": "T. TEC",
             "T_TEC_FINAL_SEGUNDOS": "T. TEC_SEGUNDOS",
             "T_TEC_FINAL_MINUTOS": "T. TEC_MINUTOS",
+            "SCORE_FUGA": "SCORE_FUGA_FLUJO",
         }
     )
 
@@ -3543,12 +3625,34 @@ def q85(serie: pd.Series) -> float:
 
 
 def q95(serie: pd.Series) -> float:
-    return float(serie.quantile(0.95))
+    serie_numerica = pd.to_numeric(serie, errors="coerce").dropna()
+    if serie_numerica.empty:
+        return float("nan")
+    return float(serie_numerica.quantile(0.95))
+
+
+def coerce_numeric_result_columns(df_in: pd.DataFrame) -> pd.DataFrame:
+    df = df_in.copy()
+    numeric_columns = [
+        "T_COLA_FINAL_SEGUNDOS",
+        "T_COLA_FINAL_MINUTOS",
+        "T_CASETA_FINAL_SEGUNDOS",
+        "T_CASETA_FINAL_MINUTOS",
+        "T_TEC_FINAL_SEGUNDOS",
+        "T_TEC_FINAL_MINUTOS",
+        "COLA_ESPERA_USUARIOS",
+    ]
+    for column in numeric_columns:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    return df
 
 
 def resumir_metricas(df_in: pd.DataFrame, group_cols: list[str], value_col: str, label: str) -> pd.DataFrame:
+    df_metricas = df_in.copy()
+    df_metricas[value_col] = pd.to_numeric(df_metricas[value_col], errors="coerce")
     tabla = (
-        df_in.groupby(group_cols, dropna=False)[value_col]
+        df_metricas.groupby(group_cols, dropna=False)[value_col]
         .agg(
             casos="size",
             promedio="mean",
@@ -3570,7 +3674,7 @@ def build_resultados_dataframe(df_export_base: pd.DataFrame) -> pd.DataFrame:
     df_resultados_base = df_export_base[df_export_base["TIEMPOS_COMPLETOS_CIERRE"]].copy()
     if df_resultados_base.empty:
         df_resultados_base["COLA_ESPERA_USUARIOS"] = pd.Series(dtype="int64")
-        return df_resultados_base
+        return coerce_numeric_result_columns(df_resultados_base)
 
     for columna in ["LLEGADA_COLA_FINAL", "LLEGADA_CASETA_FINAL", "SALIDA_CASETA_FINAL"]:
         df_resultados_base[f"{columna}_TD"] = pd.to_timedelta(df_resultados_base[columna].astype(str), errors="coerce")
@@ -3581,11 +3685,12 @@ def build_resultados_dataframe(df_export_base: pd.DataFrame) -> pd.DataFrame:
     ]
     if not grupos_resultados:
         df_resultados_base["COLA_ESPERA_USUARIOS"] = pd.Series(dtype="int64")
-        return df_resultados_base
+        return coerce_numeric_result_columns(df_resultados_base)
 
-    return pd.concat(grupos_resultados, axis=0).sort_values(
+    df_resultados = pd.concat(grupos_resultados, axis=0).sort_values(
         ["PEAJE", "SENTIDO", "CASETA", "FECHA", "LLEGADA_COLA_FINAL_TD", "_ORDEN_FILA"]
     ).reset_index(drop=True)
+    return coerce_numeric_result_columns(df_resultados)
 
 
 def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
@@ -3610,7 +3715,7 @@ def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
     resumen_narrativo = pd.DataFrame({"Texto sugerido para informe": ["No hay datos suficientes para generar resultados de informe."]})
 
     if not df_resultados.empty:
-        df_resultados = df_resultados.copy()
+        df_resultados = coerce_numeric_result_columns(df_resultados)
         df_resultados["PEAJE_BUCKET"] = df_resultados["PEAJE"].map(classify_peaje_bucket)
         tabla_programacion_informe = build_medicion_programada_table(df_resultados)
         tabla_personal_informe = build_personal_asignado_table(df_resultados)
@@ -6004,6 +6109,7 @@ def main() -> None:
             st.write(current_user["full_name"])
             st.caption(f"Usuario: {current_user['username']}")
             st.caption(f"Rol: {current_user['role_label']}")
+            st.caption(f"Version app: {get_runtime_version_label()}")
             st.caption(describe_access_window(current_user.get("active_from"), current_user.get("active_until")))
             action_cols = st.columns([5, 1]) if can_open_user_management else st.columns([1])
             with action_cols[0]:
