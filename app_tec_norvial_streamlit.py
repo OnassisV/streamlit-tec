@@ -42,6 +42,12 @@ INFORME_TEMPLATE_CANDIDATES = (
     Path(__file__).parent / "templates" / "Informe TEC NORVIAL - 2022.docx",
     Path(r"C:\Users\chrys\OneDrive\Dic Virtual D\work\2026\CIDATT\TEC\Archivos Originales\Informe TEC NORVIAL - 2022.docx"),
 )
+CLIENT_LOGO_DIR_CANDIDATES = (
+    Path(__file__).parent / "templates" / "client_logos",
+    Path(__file__).parent / "client_logos",
+    Path(__file__).parent / "logos",
+    Path(__file__).parent,
+)
 
 MODULE_CATALOG = [
     {
@@ -3202,6 +3208,432 @@ def replace_docx_paragraph_contains(doc: Document, search_snippet: str, replacem
     return False
 
 
+def replace_docx_paragraph_at_index(doc: Document, paragraph_idx: int, replacement: str) -> bool:
+    if 0 <= paragraph_idx < len(doc.paragraphs):
+        doc.paragraphs[paragraph_idx].text = replacement
+        return True
+    return False
+
+
+def pick_report_variant(seed: str, key: str, options: list[str]) -> str:
+    if not options:
+        return ""
+    digest = hashlib.sha256(f"{seed}|{key}".encode("utf-8")).hexdigest()
+    return options[int(digest[:8], 16) % len(options)]
+
+
+def build_report_variation_seed(report_label: str, informe_package: dict[str, object]) -> str:
+    rows = len(informe_package.get("df_resultados", pd.DataFrame()))
+    now_key = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    return hashlib.sha256(f"{report_label}|{rows}|{now_key}".encode("utf-8")).hexdigest()
+
+
+def summarize_informe_facts(informe_package: dict[str, object]) -> dict[str, object]:
+    tabla_programacion = informe_package.get("tabla_programacion", pd.DataFrame())
+    tabla_personal = informe_package.get("tabla_personal", pd.DataFrame())
+    tabla_tec_caseta = informe_package.get("tabla_tec_caseta", pd.DataFrame())
+    tabla_tec_peaje = informe_package.get("tabla_tec_peaje", pd.DataFrame())
+    tabla_cola = informe_package.get("tabla_cola_maxima", pd.DataFrame())
+    df_resultados = informe_package.get("df_resultados", pd.DataFrame())
+
+    peajes = []
+    if not tabla_tec_peaje.empty and "Peaje" in tabla_tec_peaje.columns:
+        peajes = [str(value) for value in pd.Series(tabla_tec_peaje["Peaje"]).dropna().astype(str).unique().tolist()]
+    peajes_text = ", ".join(peajes[:-1]) + (" y " + peajes[-1] if len(peajes) > 1 else (peajes[0] if peajes else "las estaciones evaluadas"))
+
+    total_casetas = int(tabla_tec_caseta[["Peaje", "Caseta Controlada", "Sentido de Circulacion"]].drop_duplicates().shape[0]) if not tabla_tec_caseta.empty else 0
+    total_sentidos = int(tabla_tec_peaje["Sentido de Circulacion"].astype(str).nunique()) if not tabla_tec_peaje.empty else 0
+    total_peajes = int(pd.Series(peajes).nunique()) if peajes else 0
+    total_programaciones = int(tabla_programacion.shape[0]) if not tabla_programacion.empty else 0
+    total_personal_rows = int(tabla_personal.shape[0]) if not tabla_personal.empty else 0
+
+    top_tec_peaje = None
+    if not tabla_tec_peaje.empty:
+        top_tec_peaje = tabla_tec_peaje.sort_values("Tiempo de Espera en Cola - TEC", ascending=False).iloc[0]
+
+    top_tec_caseta = None
+    if not tabla_tec_caseta.empty:
+        top_tec_caseta = tabla_tec_caseta.sort_values("Tiempo de Espera en Cola - TEC", ascending=False).iloc[0]
+
+    top_cola = None
+    if not tabla_cola.empty:
+        top_cola = tabla_cola.sort_values("Cola maxima real", ascending=False).iloc[0]
+
+    tec_peaje_values = pd.to_numeric(tabla_tec_peaje.get("Tiempo de Espera en Cola - TEC"), errors="coerce") if not tabla_tec_peaje.empty else pd.Series(dtype=float)
+    tec_caseta_values = pd.to_numeric(tabla_tec_caseta.get("Tiempo de Espera en Cola - TEC"), errors="coerce") if not tabla_tec_caseta.empty else pd.Series(dtype=float)
+    cola_values = pd.to_numeric(tabla_cola.get("Cola maxima real"), errors="coerce") if not tabla_cola.empty else pd.Series(dtype=float)
+
+    tec_threshold = 3.0
+    tec_near_threshold = 2.5
+    peaje_over_threshold = int((tec_peaje_values > tec_threshold).sum()) if not tec_peaje_values.empty else 0
+    caseta_over_threshold = int((tec_caseta_values > tec_threshold).sum()) if not tec_caseta_values.empty else 0
+    peaje_near_threshold = int(((tec_peaje_values >= tec_near_threshold) & (tec_peaje_values <= tec_threshold)).sum()) if not tec_peaje_values.empty else 0
+    caseta_near_threshold = int(((tec_caseta_values >= tec_near_threshold) & (tec_caseta_values <= tec_threshold)).sum()) if not tec_caseta_values.empty else 0
+
+    return {
+        "peajes_text": peajes_text,
+        "total_peajes": total_peajes,
+        "total_casetas": total_casetas,
+        "total_sentidos": total_sentidos,
+        "total_programaciones": total_programaciones,
+        "total_personal_rows": total_personal_rows,
+        "date_source_text": build_report_date_range_text(informe_package.get("df_resultados", pd.DataFrame())).replace("Fuente: ", ""),
+        "top_tec_peaje": top_tec_peaje,
+        "top_tec_caseta": top_tec_caseta,
+        "top_cola": top_cola,
+        "max_tec_peaje_value": float(tec_peaje_values.max()) if not tec_peaje_values.empty else None,
+        "avg_tec_peaje_value": float(tec_peaje_values.mean()) if not tec_peaje_values.empty else None,
+        "max_tec_caseta_value": float(tec_caseta_values.max()) if not tec_caseta_values.empty else None,
+        "avg_tec_caseta_value": float(tec_caseta_values.mean()) if not tec_caseta_values.empty else None,
+        "max_cola_value": int(cola_values.max()) if not cola_values.empty else None,
+        "avg_cola_value": float(cola_values.mean()) if not cola_values.empty else None,
+        "peaje_over_threshold": peaje_over_threshold,
+        "caseta_over_threshold": caseta_over_threshold,
+        "peaje_near_threshold": peaje_near_threshold,
+        "caseta_near_threshold": caseta_near_threshold,
+        "total_peaje_rows": int(tec_peaje_values.notna().sum()) if not tec_peaje_values.empty else 0,
+        "total_caseta_rows": int(tec_caseta_values.notna().sum()) if not tec_caseta_values.empty else 0,
+        "total_vehiculos_evaluados": int(df_resultados["PLACA_FINAL"].notna().sum()) if not df_resultados.empty and "PLACA_FINAL" in df_resultados.columns else 0,
+    }
+
+
+def format_minutes_reference(value: float | None) -> str:
+    return f"{value:.2f} minutos" if value is not None and pd.notna(value) else "sin referencia suficiente"
+
+
+def classify_tec_status(max_value: float | None) -> str:
+    if max_value is None or pd.isna(max_value):
+        return "sin evidencia suficiente para emitir una lectura de cumplimiento"
+    if max_value > 3:
+        return "con superacion del umbral contractual de 3.00 minutos"
+    if max_value >= 2.5:
+        return "dentro del umbral contractual, aunque cercana al limite de 3.00 minutos"
+    return "holgadamente por debajo del umbral contractual de 3.00 minutos"
+
+
+def classify_queue_status(max_cola: int | None) -> str:
+    if max_cola is None:
+        return "sin evidencia suficiente para caracterizar la cola real"
+    if max_cola >= 10:
+        return "episodios de acumulacion relevantes que merecen seguimiento operativo"
+    if max_cola >= 5:
+        return "picos de cola puntuales, aunque contenidos dentro de la jornada observada"
+    return "colas acotadas y de baja acumulacion durante la muestra"
+
+
+def build_dynamic_report_paragraphs(report_label: str, informe_package: dict[str, object]) -> dict[int, str]:
+    seed = build_report_variation_seed(report_label, informe_package)
+    facts = summarize_informe_facts(informe_package)
+    top_tec_peaje = facts["top_tec_peaje"]
+    top_tec_caseta = facts["top_tec_caseta"]
+    top_cola = facts["top_cola"]
+
+    top_tec_peaje_text = (
+        f"{top_tec_peaje['Peaje']} - {top_tec_peaje['Sentido de Circulacion']} con {float(top_tec_peaje['Tiempo de Espera en Cola - TEC']):.2f} minutos"
+        if top_tec_peaje is not None
+        else "los frentes evaluados"
+    )
+    top_tec_caseta_text = (
+        f"{top_tec_caseta['Peaje']} - caseta {top_tec_caseta['Caseta Controlada']} - {top_tec_caseta['Sentido de Circulacion']} con {float(top_tec_caseta['Tiempo de Espera en Cola - TEC']):.2f} minutos"
+        if top_tec_caseta is not None
+        else "las casetas observadas"
+    )
+    top_cola_text = (
+        f"{int(top_cola['Cola maxima real'])} usuarios en {top_cola['Peaje']} - caseta {top_cola['Caseta Controlada']} - {top_cola['Sentido de Circulacion']}"
+        if top_cola is not None
+        else "la mayor cola observada durante la campana"
+    )
+    compliance_status_text = classify_tec_status(facts["max_tec_peaje_value"])
+    caseta_status_text = classify_tec_status(facts["max_tec_caseta_value"])
+    queue_status_text = classify_queue_status(facts["max_cola_value"])
+    peaje_threshold_summary = (
+        f"{facts['total_peaje_rows'] - facts['peaje_over_threshold']} de {facts['total_peaje_rows']} frentes peaje-sentido quedaron en o por debajo de 3.00 minutos"
+        if facts["total_peaje_rows"]
+        else "no se cuenta con frentes peaje-sentido suficientes para evaluar cumplimiento"
+    )
+    caseta_threshold_summary = (
+        f"{facts['total_caseta_rows'] - facts['caseta_over_threshold']} de {facts['total_caseta_rows']} casetas-sentido quedaron en o por debajo de 3.00 minutos"
+        if facts["total_caseta_rows"]
+        else "no se cuenta con casetas-sentido suficientes para evaluar cumplimiento"
+    )
+    recommendation_focus_text = (
+        f"priorizar la revision operativa de {top_tec_peaje['Peaje']} - {top_tec_peaje['Sentido de Circulacion']}"
+        if top_tec_peaje is not None and facts["max_tec_peaje_value"] is not None and facts["max_tec_peaje_value"] > 3
+        else f"mantener seguimiento preventivo sobre {top_tec_peaje['Peaje']} - {top_tec_peaje['Sentido de Circulacion']}"
+        if top_tec_peaje is not None
+        else "mantener seguimiento sobre los frentes evaluados"
+    )
+
+    variants = {
+        24: [
+            "En el marco del seguimiento a los indicadores de servicialidad de la Red Vial N° 5, el presente informe sintetiza la evaluacion del Tiempo de Espera en Cola desarrollada en {peajes_text}, considerando los registros procesados con la aplicacion TEC.",
+            "Como parte del control de niveles de servicio de la Red Vial N° 5, este informe consolida la medicion del Tiempo de Espera en Cola efectuada en {peajes_text}, a partir de la base depurada y trazable generada por el sistema.",
+            "El presente documento expone los resultados de la medicion del Tiempo de Espera en Cola para {peajes_text}, dentro del esquema de supervision de servicialidad aplicable a la Red Vial N° 5.",
+        ],
+        25: [
+            "Para esta evaluacion, el TEC se interpreta como el tiempo promedio ponderado que transcurre desde que el usuario se incorpora a la cola hasta que concluye la atencion en la caseta, criterio que permite describir con consistencia el desempeno operativo observado.",
+            "Bajo el enfoque utilizado en campo y gabinete, el TEC corresponde al intervalo promedio ponderado entre el inicio de la espera en cola y la culminacion del servicio, lo que permite caracterizar el comportamiento real de la atencion vehicular.",
+            "El indicador TEC se calcula como el tiempo promedio ponderado de espera entre la formacion de la cola y el cierre de la atencion en caseta, de modo que refleje la experiencia efectiva del usuario durante la operacion.",
+        ],
+        31: [
+            "El objetivo del estudio es medir y documentar el Tiempo de Espera en Cola en {total_peajes} frentes operativos, con un total de {total_casetas} casetas-sentido evaluadas, a fin de verificar el comportamiento del servicio durante las jornadas observadas.",
+            "La evaluacion tiene por finalidad cuantificar el Tiempo de Espera en Cola en las estaciones consideradas, cubriendo {total_casetas} combinaciones caseta-sentido, para contar con evidencia objetiva sobre el desempeno operativo registrado.",
+            "Este estudio busca estimar el Tiempo de Espera en Cola en los puntos de cobro analizados, organizando la informacion por caseta y sentido para sustentar la revision tecnica de la operacion observada.",
+        ],
+        39: [
+            "La evaluacion se desarrollo bajo criterios de cobertura operativa, continuidad de observacion y consistencia en el registro de placas y tiempos, respetando la programacion definida para la medicion.",
+            "Para asegurar la comparabilidad de resultados, la medicion se ejecuto con criterios uniformes de cobertura, ventanas de observacion y registro de eventos operativos relevantes.",
+            "Las consideraciones generales del estudio priorizaron la trazabilidad del dato, la continuidad de la captura y la cobertura integral de las casetas operativas incluidas en la jornada.",
+        ],
+        41: [
+            "Las labores abarcaron las estaciones y sentidos operativos comprendidos en la programacion de campo, de manera que el analisis represente el funcionamiento efectivo del sistema durante la muestra.",
+            "Se relevaron los puntos de cobro que estuvieron operativos dentro de la ventana de observacion, procurando reflejar el comportamiento real de la atencion en cada frente evaluado.",
+            "La muestra cubrio las estaciones y casetas habilitadas durante la jornada, con el proposito de capturar una lectura representativa del desempeno del sistema de cobro.",
+        ],
+        43: [
+            "El tiempo de medicion se organizo sobre jornadas de control continuas y suficientes para capturar la dinamica de llegada, formacion de cola y atencion en caseta dentro de cada frente evaluado.",
+            "La ventana de observacion se definio para recoger un volumen de datos adecuado y permitir una lectura estable del comportamiento de cola y servicio por caseta.",
+            "Las franjas de control consideradas permitieron registrar la secuencia completa de llegada, espera y atencion de los vehiculos en las casetas observadas.",
+        ],
+        48: [
+            "La medicion se ejecuto sobre las casetas y sentidos que permanecieron operativos durante la jornada programada, utilizando como referencia los horarios efectivamente observados en campo.",
+            "Las ventanas de evaluacion se aplicaron a las casetas activas en cada estacion, considerando los periodos reales de funcionamiento detectados durante la medicion.",
+            "Para el relevamiento se consideraron las casetas operativas dentro de los horarios efectivos de observacion, con el fin de mantener consistencia entre cobertura y resultados.",
+        ],
+        50: [
+            "El levantamiento de informacion se sustento en el metodo de placas de rodaje, por tratarse de una tecnica adecuada para enlazar los hitos de llegada, atencion y salida de cada vehiculo.",
+            "Se utilizo el metodo de placas de rodaje como procedimiento central de captura, ya que permite seguir la trayectoria temporal del vehiculo a lo largo del sistema de cola y atencion.",
+            "La recoleccion de datos se realizo mediante el metodo de placas de rodaje, herramienta que facilita reconstruir con precision los tiempos asociados al proceso de cobro.",
+        ],
+        52: [
+            "La labor de campo quedo respaldada con evidencias visuales y registros complementarios que permiten contextualizar los eventos operativos observados durante la muestra.",
+            "El trabajo desarrollado en campo se complemento con soportes visuales y anotaciones de control, a fin de reforzar la trazabilidad de la campana de medicion.",
+            "La evaluacion cuenta con evidencia de campo suficiente para documentar tanto la operacion observada como las condiciones bajo las cuales se obtuvo la muestra.",
+        ],
+        57: [
+            "Para fines de esta evaluacion, el TEC se entiende como el intervalo transcurrido entre la incorporacion del vehiculo a la cola y la finalizacion de su atencion en la caseta correspondiente.",
+            "En esta medicion, el TEC representa el tiempo que media entre el momento en que el usuario entra en espera y el cierre de la atencion en cabina de cobro.",
+            "El criterio adoptado define el TEC como el tiempo total de espera desde la formacion de cola hasta la salida del vehiculo luego de ser atendido en la caseta.",
+        ],
+        59: [
+            "Bajo el metodo de placas, el registro de campo recoge hitos temporales y operativos suficientes para reconstruir el proceso de espera y servicio de cada vehiculo observado.",
+            "El metodo aplicado requiere levantar referencias temporales y de identificacion vehicular que permitan estimar el TEC por caseta y sentido de circulacion.",
+            "La logica del metodo de placas consiste en registrar los hitos necesarios para seguir el desplazamiento del vehiculo dentro del sistema de cola y cobro.",
+        ],
+        60: [
+            "Se registra la hora en la que el vehiculo se detiene para integrarse a la cola o para ingresar directamente al sistema de atencion.",
+            "Como primer hito, se consigna el momento en que el vehiculo se incorpora a la espera o inicia su aproximacion a la caseta.",
+            "El levantamiento considera la hora en que el usuario entra al proceso de espera, aun cuando no se forme una cola visible.",
+        ],
+        62: [
+            "Asimismo, se toma el instante de salida de la caseta de cobro, por lo que cada cabina es tratada como una unidad independiente de servicio.",
+            "Tambien se releva la hora en que culmina la atencion en la caseta, tratando cada cabina como un sistema de cola individual.",
+            "El cierre del servicio se registra al momento de abandonar la caseta, asumiendo para el analisis que cada cabina opera como un sistema de cola independiente.",
+        ],
+        63: [
+            "Con esta informacion, el metodo permite estimar el tiempo promedio ponderado por vehiculo conforme a los lineamientos contractuales y a la estructura operativa observada.",
+            "A partir de los hitos levantados, se obtiene un promedio ponderado por vehiculo coherente con la definicion operacional del TEC contemplada para la evaluacion.",
+            "La metodologia permite calcular el promedio ponderado de espera por vehiculo siguiendo los criterios tecnicos aplicables al indicador TEC.",
+        ],
+        64: [
+            "Para cada registro muestreado, el TEC se determina con la diferencia entre la hora de finalizacion del servicio y la hora de inicio de la espera en cola.",
+            "El calculo por vehiculo se efectua restando el momento en que concluye la atencion al instante en que el usuario inicia su espera dentro del sistema.",
+            "En terminos operativos, el TEC individual resulta de comparar el hito de cierre de servicio con el punto de inicio de la espera del vehiculo.",
+        ],
+        65: [
+            "En la practica, esta definicion permite evaluar el desempeno de cada sentido de cobro con base en la experiencia efectiva del usuario durante la jornada.",
+            "Aplicado en campo, este criterio brinda una lectura directa del servicio percibido por el usuario en cada frente de cobro observado.",
+            "Desde la perspectiva operativa, la metodologia facilita comparar el servicio ofrecido por cada sentido de circulacion y cada caseta evaluada.",
+        ],
+        69: [
+            "El equipo de trabajo incluyo una jefatura de proyecto responsable de consolidar resultados, coordinar la campana y asegurar la integracion tecnica del informe final.",
+            "La estructura operativa considero una jefatura de proyecto encargada de conducir la coordinacion general y articular la elaboracion del informe tecnico.",
+            "La campana conto con una jefatura de proyecto que asumio la coordinacion global, el seguimiento de actividades y la preparacion del informe final.",
+        ],
+        72: [
+            "Asimismo, se dispuso de un especialista en medicion de TEC para planificar la operacion de campo y conducir tecnicamente la toma de informacion.",
+            "La labor se complemento con un especialista en TEC responsable de la organizacion metodologica y de la supervision tecnica de la muestra.",
+            "El trabajo de campo fue dirigido por un especialista en TEC que estructuro la campana y acompanio tecnicamente la ejecucion de la medicion.",
+        ],
+        74: [
+            "Entre sus funciones principales estuvo organizar y planificar las actividades previas al inicio de la captura de muestra.",
+            "Dentro de sus responsabilidades se incluyo la preparacion y programacion de las tareas previas al levantamiento de informacion.",
+            "Como parte de su rol, se encargo de estructurar y ordenar las labores necesarias antes del inicio de la medicion en campo.",
+        ],
+        76: [
+            "Tambien correspondio capacitar a aforadores y supervisores para asegurar criterios uniformes de registro durante la campana.",
+            "Otra funcion relevante fue entrenar al personal de campo para homogeneizar la captura de placas, tiempos y eventos de interes.",
+            "El especialista tuvo ademas la tarea de instruir a los equipos de campo, con el fin de estandarizar el levantamiento de datos.",
+        ],
+        78: [
+            "Durante la ejecucion, se brindo asistencia tecnica continua a supervisores y aforadores para resolver incidencias y mantener la calidad del dato.",
+            "En campo se proporciono acompanamiento tecnico permanente a los equipos operativos para sostener la consistencia del relevamiento.",
+            "La asistencia tecnica al personal desplegado permitio atender consultas y resguardar la calidad de la captura durante la muestra.",
+        ],
+        80: [
+            "Finalmente, se superviso que las labores se desarrollaran con continuidad y normalidad, en linea con los fines del estudio.",
+            "Se verifico asimismo que la campana se mantuviera continua y estable, conforme a los requerimientos tecnicos de la evaluacion.",
+            "El control de continuidad de las labores fue parte central del seguimiento, para asegurar que la muestra respondiera a los objetivos del informe.",
+        ],
+        82: [
+            "La operacion en campo se apoyo en supervisores y aforadores asignados por estacion, responsables del seguimiento directo a la captura de placas y tiempos por caseta.",
+            "El despliegue de campo considero supervisores y aforadores por estacion, encargados de vigilar la toma de informacion y la cobertura de las casetas observadas.",
+            "Para la ejecucion de la medicion se dispuso personal de supervision y aforo en cada estacion, con funciones directas sobre el registro operativo de la muestra.",
+        ],
+        85: [
+            "Durante la muestra tambien se registraron eventos y observaciones complementarias que ayudan a interpretar la operacion del sistema y sus variaciones.",
+            "Adicionalmente, se tomo nota de incidencias y elementos contextuales utiles para explicar el comportamiento operativo detectado en la jornada.",
+            "El relevamiento considero hechos y datos adicionales que permiten contextualizar la operacion observada durante la medicion.",
+        ],
+        88: [
+            "El procesamiento y depuracion de la informacion estuvo a cargo del componente estadistico del equipo, responsable de estructurar la base y preparar los resultados del informe.",
+            "La fase de procesamiento se sostuvo en un apoyo estadistico encargado de ordenar, depurar y consolidar los registros provenientes de campo.",
+            "El equipo incorporo un frente estadistico para transformar la informacion relevada en resultados trazables y comparables dentro del informe final.",
+        ],
+        98: [
+            "Para la obtencion de la muestra se utilizo material de campo orientado a registrar de manera ordenada la placa, los hitos horarios y las incidencias asociadas al paso de cada vehiculo.",
+            "El trabajo de levantamiento empleo formatos y soportes de campo disenados para capturar de forma estructurada los parametros necesarios de cada vehiculo observado.",
+            "La medicion se apoyo en instrumentos de campo preparados para documentar, con criterios uniformes, la informacion operativa de cada registro vehicular.",
+        ],
+        99: [
+            "El formato empleado permitio relevar la secuencia completa del vehiculo dentro del sistema, desde su llegada a la cola hasta la finalizacion del servicio.",
+            "La planilla de campo se diseno para seguir el recorrido temporal del vehiculo y dejar trazados los momentos de espera y atencion en caseta.",
+            "El instrumento de registro hizo posible capturar la trayectoria operativa del vehiculo, incluyendo ingreso al sistema, espera y cierre de atencion.",
+        ],
+        101: [
+            "En terminos operativos, el proceso de medicion consistio en observar la llegada del vehiculo al sistema, registrar su espera y documentar la culminacion de la atencion en cabina.",
+            "La medicion en campo se desarrollo siguiendo la secuencia natural del servicio: ingreso del vehiculo, permanencia en cola y salida luego de ser atendido.",
+            "El proceso aplicado en campo registro la cronologia del servicio desde la incorporacion del vehiculo a la espera hasta su salida efectiva de la caseta.",
+        ],
+        108: [
+            "En la Tabla N° 3 se presentan los promedios de TEC por caseta y sentido de circulacion. La lectura consolidada muestra como referencia mas exigente a {top_tec_caseta_text}.",
+            "La Tabla N° 3 resume el Tiempo de Espera en Cola promedio por caseta y sentido. Dentro de los resultados obtenidos, resalta {top_tec_caseta_text}.",
+            "Los valores consignados en la Tabla N° 3 sintetizan el TEC promedio por caseta y sentido de cobro, destacando especialmente {top_tec_caseta_text}.",
+        ],
+        112: [
+            "Lectura ejecutiva: {caseta_threshold_summary}; el promedio maximo por caseta-sentido fue de {max_tec_caseta_value_text}, por lo que el bloque caseta se interpreta como {caseta_status_text}.",
+            "Como lectura gerencial del detalle por caseta, {caseta_threshold_summary} y el punto mas exigente alcanzo {max_tec_caseta_value_text}; en conjunto, el resultado se aprecia {caseta_status_text}.",
+            "En terminos ejecutivos, el analisis por caseta muestra que {caseta_threshold_summary}; el valor mas alto, {max_tec_caseta_value_text}, ubica a este bloque como {caseta_status_text}.",
+        ],
+        113: [
+            "La Tabla N° 4 consolida el comportamiento promedio por peaje y sentido; en el conjunto evaluado, el mayor valor corresponde a {top_tec_peaje_text}.",
+            "En la Tabla N° 4 se resume el TEC promedio por peaje y sentido, observandose como resultado mas alto {top_tec_peaje_text}.",
+            "La lectura agregada de la Tabla N° 4 permite identificar el valor promedio mas elevado en {top_tec_peaje_text}.",
+        ],
+        117: [
+            "Desde la perspectiva de cumplimiento, {peaje_threshold_summary}; el promedio agregado del bloque fue de {avg_tec_peaje_value_text} y la lectura global se considera {compliance_status_text}.",
+            "La lectura ejecutiva por peaje-sentido indica que {peaje_threshold_summary}; con un promedio general de {avg_tec_peaje_value_text}, el resultado agregado se ubica {compliance_status_text}.",
+            "En clave de gestion, {peaje_threshold_summary}; al contrastarlo con el promedio consolidado de {avg_tec_peaje_value_text}, el comportamiento agregado permanece {compliance_status_text}.",
+        ],
+        119: [
+            "La Tabla N° 5 y las tablas siguientes muestran la distribucion de frecuencias de cola por estacion y caseta, registrandose como mayor cola observada {top_cola_text}.",
+            "En las Tablas N° 5 a N° 8 se presenta la frecuencia de usuarios segun tamano de cola; dentro de la campana, la mayor referencia corresponde a {top_cola_text}.",
+            "La evaluacion de cola maxima real se resume en las Tablas N° 5, 6, 7 y 8, con un valor maximo reportado de {top_cola_text}.",
+        ],
+        120: [
+            "La interpretacion operativa de las colas indica {queue_status_text}; el maximo registrado fue de {max_cola_value_text} y el promedio de las colas maximas por caseta se ubico en {avg_cola_value_text}.",
+            "Como lectura ejecutiva del bloque de colas, se aprecia {queue_status_text}; la referencia maxima fue {max_cola_value_text}, mientras que la media de cola maxima por caseta alcanzo {avg_cola_value_text}.",
+            "Operativamente, el patron de cola se resume como {queue_status_text}; el valor maximo observado fue {max_cola_value_text} y la media de cola maxima por caseta fue de {avg_cola_value_text}.",
+        ],
+        137: [
+            "Las Imagenes N° 1, 2 y 3 permiten apreciar la distribucion porcentual de los tamanos de cola observados por estacion, complementando la lectura tabular de la evaluacion.",
+            "Las Imagenes N° 1, 2 y 3 ilustran la frecuencia relativa de las colas registradas en cada estacion evaluada y refuerzan la interpretacion de los resultados.",
+            "La lectura grafica contenida en las Imagenes N° 1, 2 y 3 resume la estructura porcentual de las colas observadas durante la campana de medicion.",
+        ],
+        152: [
+            "Como conclusion general, el bloque evaluado se comporto {compliance_status_text}; {peaje_threshold_summary} y el frente de mayor exigencia fue {top_tec_peaje_text}.",
+            "En sintesis, la evaluacion muestra un desempeno {compliance_status_text}; {peaje_threshold_summary}, con su referencia mas alta en {top_tec_peaje_text}.",
+            "A nivel global, los resultados del informe ubican al conjunto evaluado {compliance_status_text}; {peaje_threshold_summary}, siendo {top_tec_peaje_text} el punto mas demandante.",
+        ],
+        153: [
+            "En un segundo nivel de lectura, el detalle por caseta confirma que {caseta_threshold_summary}; la mayor presion operativa se concentro en {top_tec_caseta_text}, mientras que la cola maxima observada fue {top_cola_text}.",
+            "Desde una mirada operativa mas fina, el comportamiento por caseta indica que {caseta_threshold_summary}; ademas, la referencia critica del detalle fue {top_tec_caseta_text} y la mayor cola correspondio a {top_cola_text}.",
+            "Profundizando en el analisis, el nivel caseta-sentido muestra que {caseta_threshold_summary}; el punto mas exigente fue {top_tec_caseta_text}, en paralelo con una cola maxima de {top_cola_text}.",
+        ],
+        154: [
+            "En consecuencia, corresponde {recommendation_focus_text}, especialmente si se busca sostener el indicador con margen frente al limite contractual y anticipar episodios de mayor demanda.",
+            "Por ello, la recomendacion inmediata es {recommendation_focus_text}, manteniendo seguimiento sobre la evolucion del TEC y de la cola maxima en las proximas mediciones.",
+            "Bajo esta evidencia, resulta pertinente {recommendation_focus_text} y conservar trazabilidad especifica sobre los frentes con mayor presion de cola y espera.",
+        ],
+    }
+
+    replacements = {}
+    for paragraph_idx, options in variants.items():
+        replacements[paragraph_idx] = pick_report_variant(seed, f"p{paragraph_idx}", options).format(
+            peajes_text=facts["peajes_text"],
+            total_peajes=facts["total_peajes"],
+            total_casetas=facts["total_casetas"],
+            total_sentidos=facts["total_sentidos"],
+            total_programaciones=facts["total_programaciones"],
+            total_personal_rows=facts["total_personal_rows"],
+            date_source_text=facts["date_source_text"],
+            top_tec_peaje_text=top_tec_peaje_text,
+            top_tec_caseta_text=top_tec_caseta_text,
+            top_cola_text=top_cola_text,
+            max_tec_peaje_value_text=format_minutes_reference(facts["max_tec_peaje_value"]),
+            avg_tec_peaje_value_text=format_minutes_reference(facts["avg_tec_peaje_value"]),
+            max_tec_caseta_value_text=format_minutes_reference(facts["max_tec_caseta_value"]),
+            max_cola_value_text=f"{facts['max_cola_value']} usuarios" if facts["max_cola_value"] is not None else "sin referencia suficiente",
+            avg_cola_value_text=f"{facts['avg_cola_value']:.2f} usuarios" if facts["avg_cola_value"] is not None and pd.notna(facts["avg_cola_value"]) else "sin referencia suficiente",
+            compliance_status_text=compliance_status_text,
+            caseta_status_text=caseta_status_text,
+            queue_status_text=queue_status_text,
+            peaje_threshold_summary=peaje_threshold_summary,
+            caseta_threshold_summary=caseta_threshold_summary,
+            recommendation_focus_text=recommendation_focus_text,
+        )
+    return replacements
+
+
+def discover_cover_logo_paths() -> list[Path | None]:
+    available_images = []
+    for directory in CLIENT_LOGO_DIR_CANDIDATES:
+        if directory.exists() and directory.is_dir():
+            available_images.extend(
+                sorted(
+                    [path for path in directory.iterdir() if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg"}],
+                    key=lambda path: path.name.lower(),
+                )
+            )
+
+    def find_logo(keywords: tuple[str, ...]) -> Path | None:
+        for image_path in available_images:
+            stem_key = normalize_text_key(image_path.stem)
+            if any(keyword in stem_key for keyword in keywords):
+                return image_path
+        return None
+
+    left_logo = find_logo(("norvial", "concesionario", "cliente1", "izq", "left"))
+    center_logo = find_logo(("ositran", "regulador", "cliente2", "centro", "center"))
+    right_logo = find_logo(("cidatt", "consult", "cliente3", "der", "right"))
+    if right_logo is None and CONTRACTOR_LOGO_PATH.exists():
+        right_logo = CONTRACTOR_LOGO_PATH
+    return [left_logo, center_logo, right_logo]
+
+
+def update_cover_logos(doc: Document) -> None:
+    if not doc.paragraphs:
+        return
+    cover_paragraph = doc.paragraphs[0]
+    rel_ids = []
+    for blip in cover_paragraph._p.xpath('.//a:blip'):
+        rel_id = blip.get(qn('r:embed'))
+        if rel_id:
+            rel_ids.append(rel_id)
+    if not rel_ids:
+        return
+
+    for rel_id, logo_path in zip(rel_ids, discover_cover_logo_paths()):
+        if logo_path is None or not logo_path.exists():
+            continue
+        replace_related_image(doc, rel_id, logo_path.read_bytes())
+
+
+def apply_dynamic_template_narrative(doc: Document, report_label: str, informe_package: dict[str, object]) -> None:
+    for paragraph_idx, replacement in build_dynamic_report_paragraphs(report_label, informe_package).items():
+        replace_docx_paragraph_at_index(doc, paragraph_idx, replacement)
+
+
 def classify_peaje_bucket(peaje: object) -> str:
     peaje_key = normalize_text_key(peaje)
     if "paraiso" in peaje_key:
@@ -3427,6 +3859,9 @@ def render_frequency_chart_bytes(title: str, percentage_series: pd.DataFrame, ac
 
 
 def build_report_date_range_text(df_resultados: pd.DataFrame) -> str:
+    if df_resultados is None or getattr(df_resultados, "empty", True) or "FECHA" not in df_resultados.columns:
+        return "Fuente: Base procesada en la aplicacion TEC."
+
     fechas = pd.to_datetime(df_resultados.get("FECHA"), errors="coerce").dropna().sort_values().dt.normalize().unique()
     if len(fechas) == 0:
         return "Fuente: Base procesada en la aplicacion TEC."
@@ -3585,6 +4020,7 @@ def to_templated_docx_bytes(report_label: str, informe_package: dict[str, object
         return to_docx_bytes(report_label, informe_package)
 
     doc = Document(template_path)
+    update_cover_logos(doc)
     table_mapping = {
         0: informe_package["tabla_programacion"],
         1: informe_package["tabla_personal"],
@@ -3623,6 +4059,7 @@ def to_templated_docx_bytes(report_label: str, informe_package: dict[str, object
         "de la tabla n 4 del presente informe",
         build_template_conclusion_text(informe_package),
     )
+    apply_dynamic_template_narrative(doc, report_label, informe_package)
 
     output = BytesIO()
     doc.save(output)
