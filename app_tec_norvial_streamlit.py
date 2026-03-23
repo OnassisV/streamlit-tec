@@ -2389,24 +2389,32 @@ def build_export_tables(
             else 9
         )
         fuga_detail["_FUGA_FECHA_KEY"] = pd.to_datetime(fuga_detail["FECHA"], errors="coerce").dt.normalize()
+        fuga_detail["_FUGA_PEAJE_KEY"] = fuga_detail["PEAJE"].map(normalize_text_key)
+        fuga_detail["_FUGA_CASETA_KEY"] = fuga_detail["CASETA"].map(normalize_text_key)
+        fuga_detail["_FUGA_SENTIDO_KEY"] = fuga_detail["SENTIDO"].map(normalize_text_key)
+        fuga_detail["_FUGA_PLACA_KEY"] = fuga_detail["PLACA_FINAL"].map(normalize_text_key)
         fuga_detail = fuga_detail.sort_values(
             ["_FUGA_PRIORIDAD", "SCORE_FUGA", "PEAJE", "CASETA", "SENTIDO", "_FUGA_FECHA_KEY", "PLACA_FINAL"],
             ascending=[True, False, True, True, True, True, True],
         )
         fuga_detail = fuga_detail.drop_duplicates(
-            subset=["PEAJE", "CASETA", "SENTIDO", "_FUGA_FECHA_KEY", "PLACA_FINAL"],
+            subset=["_FUGA_PEAJE_KEY", "_FUGA_CASETA_KEY", "_FUGA_SENTIDO_KEY", "_FUGA_FECHA_KEY", "_FUGA_PLACA_KEY"],
             keep="first",
         )
 
         df_export_base["_FUGA_FECHA_KEY"] = pd.to_datetime(df_export_base["FECHA"], errors="coerce").dt.normalize()
+        df_export_base["_FUGA_PEAJE_KEY"] = df_export_base["PEAJE"].map(normalize_text_key)
+        df_export_base["_FUGA_CASETA_KEY"] = df_export_base["CASETA"].map(normalize_text_key)
+        df_export_base["_FUGA_SENTIDO_KEY"] = df_export_base["SENTIDO"].map(normalize_text_key)
+        df_export_base["_FUGA_PLACA_KEY"] = df_export_base["PLACA_FINAL"].map(normalize_text_key)
         df_export_base = df_export_base.merge(
             fuga_detail[
                 [
-                    "PEAJE",
-                    "CASETA",
-                    "SENTIDO",
+                    "_FUGA_PEAJE_KEY",
+                    "_FUGA_CASETA_KEY",
+                    "_FUGA_SENTIDO_KEY",
                     "_FUGA_FECHA_KEY",
-                    "PLACA_FINAL",
+                    "_FUGA_PLACA_KEY",
                     "TIPO_FUGA",
                     "NIVEL_CONFIANZA",
                     "SCORE_FUGA",
@@ -2416,10 +2424,12 @@ def build_export_tables(
                     "ES_INCOMPLETO_NO_CONCLUYENTE",
                 ]
             ],
-            on=["PEAJE", "CASETA", "SENTIDO", "_FUGA_FECHA_KEY", "PLACA_FINAL"],
+            on=["_FUGA_PEAJE_KEY", "_FUGA_CASETA_KEY", "_FUGA_SENTIDO_KEY", "_FUGA_FECHA_KEY", "_FUGA_PLACA_KEY"],
             how="left",
         )
-        df_export_base = df_export_base.drop(columns=["_FUGA_FECHA_KEY"])
+        df_export_base = df_export_base.drop(
+            columns=["_FUGA_FECHA_KEY", "_FUGA_PEAJE_KEY", "_FUGA_CASETA_KEY", "_FUGA_SENTIDO_KEY", "_FUGA_PLACA_KEY"]
+        )
     else:
         df_export_base["TIPO_FUGA"] = pd.NA
         df_export_base["NIVEL_CONFIANZA"] = pd.NA
