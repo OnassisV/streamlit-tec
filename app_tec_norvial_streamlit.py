@@ -3611,22 +3611,115 @@ def discover_cover_logo_paths() -> list[Path | None]:
     return [left_logo, center_logo, right_logo]
 
 
+def build_cover_publication_period_text(reference_dt: datetime | None = None) -> str:
+    dt = reference_dt or datetime.now()
+    meses = {
+        1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL", 5: "MAYO", 6: "JUNIO",
+        7: "JULIO", 8: "AGOSTO", 9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE",
+    }
+    return f"{meses[dt.month]} {dt.year}"
+
+
+def build_cover_logo_image_bytes(logo_path: Path, square_canvas: bool = False) -> bytes | None:
+    if logo_path is None or not logo_path.exists():
+        return None
+
+    image = Image.open(logo_path).convert("RGBA")
+    alpha_channel = image.getchannel("A")
+    bbox = alpha_channel.point(lambda value: 255 if value > 20 else 0).getbbox()
+    if bbox is None:
+        background = Image.new("RGBA", image.size, (255, 255, 255, 255))
+        diff = ImageChops.difference(image, background)
+        bbox = diff.getbbox()
+    if bbox:
+        left, top, right, bottom = bbox
+        padding = 8
+        image = image.crop(
+            (
+                max(0, left - padding),
+                max(0, top - padding),
+                min(image.width, right + padding),
+                min(image.height, bottom + padding),
+            )
+        )
+
+    if square_canvas:
+        side = max(image.width, image.height)
+        canvas = Image.new("RGBA", (side, side), (255, 255, 255, 0))
+        offset = ((side - image.width) // 2, (side - image.height) // 2)
+        canvas.alpha_composite(image, dest=offset)
+        image = canvas
+
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
+def update_cover_publication_text(doc: Document, reference_dt: datetime | None = None) -> None:
+    cover_nodes = [node for node in doc.part._element.xpath('.//w:t') if getattr(node, 'text', None)][:50]
+    if not cover_nodes:
+        return
+
+    publication_text = build_cover_publication_period_text(reference_dt)
+    month_text, year_text = publication_text.split()
+    year_prefix = year_text[:2]
+    year_suffix = year_text[2:]
+    month_names = {
+        "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
+        "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE",
+    }
+
+    for idx, node in enumerate(cover_nodes):
+        raw_text = node.text or ""
+        stripped = raw_text.strip()
+        upper = stripped.upper()
+
+        if upper in month_names:
+            node.text = raw_text.replace(stripped, month_text)
+            continue
+
+        if re.fullmatch(r"(?i)(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+20\d{2}", stripped):
+            node.text = raw_text.replace(stripped, publication_text)
+            continue
+
+        if stripped == "20" and idx + 1 < len(cover_nodes):
+            next_stripped = (cover_nodes[idx + 1].text or "").strip()
+            if re.fullmatch(r"\d{2}", next_stripped):
+                node.text = raw_text.replace(stripped, year_prefix)
+                continue
+
+        if re.fullmatch(r"\d{2}", stripped) and idx > 0:
+            prev_stripped = (cover_nodes[idx - 1].text or "").strip()
+            if prev_stripped == "20":
+                node.text = raw_text.replace(stripped, year_suffix)
+
+
 def update_cover_logos(doc: Document) -> None:
     if not doc.paragraphs:
         return
     cover_paragraph = doc.paragraphs[0]
-    rel_ids = []
-    for blip in cover_paragraph._p.xpath('.//a:blip'):
-        rel_id = blip.get(qn('r:embed'))
-        if rel_id:
-            rel_ids.append(rel_id)
-    if not rel_ids:
+    cover_xml = cover_paragraph._p.xml
+    cover_drawings = [
+        {
+            "rel_id": match.group(5),
+            "width": int(match.group(1)),
+            "height": int(match.group(2)),
+            "name": match.group(4),
+        }
+        for match in re.finditer(
+            r'<wp:extent cx="(\d+)" cy="(\d+)".*?<wp:docPr id="(\d+)" name="([^"]+)".*?r:embed="(rId\d+)"',
+            cover_xml,
+            re.S,
+        )
+    ]
+    if not cover_drawings:
         return
 
-    for rel_id, logo_path in zip(rel_ids, discover_cover_logo_paths()):
-        if logo_path is None or not logo_path.exists():
-            continue
-        replace_related_image(doc, rel_id, logo_path.read_bytes())
+    contractor_logo_bytes = build_cover_logo_image_bytes(CONTRACTOR_LOGO_PATH, square_canvas=True)
+    if contractor_logo_bytes is not None:
+        for drawing in cover_drawings:
+            if drawing["name"].startswith("Text Box") and abs(drawing["width"] - drawing["height"]) < 250000:
+                replace_related_image(doc, drawing["rel_id"], contractor_logo_bytes)
 
 
 def apply_dynamic_template_narrative(doc: Document, report_label: str, informe_package: dict[str, object]) -> None:
@@ -4021,6 +4114,7 @@ def to_templated_docx_bytes(report_label: str, informe_package: dict[str, object
 
     doc = Document(template_path)
     update_cover_logos(doc)
+    update_cover_publication_text(doc)
     table_mapping = {
         0: informe_package["tabla_programacion"],
         1: informe_package["tabla_personal"],
