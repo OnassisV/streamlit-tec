@@ -3691,6 +3691,8 @@ def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
 
     if not df_resultados.empty:
         df_resultados = df_resultados.copy()
+        if "T_TEC_FINAL_MINUTOS" in df_resultados.columns:
+            df_resultados["T_TEC_FINAL_MINUTOS"] = pd.to_numeric(df_resultados["T_TEC_FINAL_MINUTOS"], errors="coerce")
         df_resultados["PEAJE_BUCKET"] = df_resultados["PEAJE"].map(classify_peaje_bucket)
         tabla_programacion_informe = build_medicion_programada_table(df_resultados)
         tabla_personal_informe = build_personal_asignado_table(df_resultados)
@@ -3704,7 +3706,7 @@ def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
             .reset_index()
             .sort_values(["PEAJE", "SENTIDO", "CASETA"])
         )
-        tabla_tec_caseta["TEC_MINUTOS"] = tabla_tec_caseta["TEC_MINUTOS"].round(2)
+        tabla_tec_caseta["TEC_MINUTOS"] = pd.to_numeric(tabla_tec_caseta["TEC_MINUTOS"], errors="coerce").round(2)
         tabla_tec_caseta_informe = tabla_tec_caseta.rename(
             columns={
                 "PEAJE": "Peaje",
@@ -3726,7 +3728,7 @@ def build_informe_package(df_export_base: pd.DataFrame) -> dict[str, object]:
             .reset_index()
             .sort_values(["PEAJE", "SENTIDO"])
         )
-        tabla_tec_peaje["TEC_MINUTOS"] = tabla_tec_peaje["TEC_MINUTOS"].round(2)
+        tabla_tec_peaje["TEC_MINUTOS"] = pd.to_numeric(tabla_tec_peaje["TEC_MINUTOS"], errors="coerce").round(2)
         tabla_tec_peaje_informe = tabla_tec_peaje.rename(
             columns={
                 "PEAJE": "Peaje",
