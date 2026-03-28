@@ -4515,8 +4515,8 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
 
     doc.add_heading("4.2  Material de campo", level=2)
     doc.add_paragraph(
-        "Para obtener la muestra de flujo vehicular se empleo un formato disenado por el Consultor, "
-        "que permitio relevar la informacion de cada vehiculo muestreado."
+        "Para obtener la muestra de flujo vehicular se empleo un aplicativo web desarrollado por el Consultor, "
+        "que permitio el registro en tiempo real y la correcta unificacion de los tiempos por placa de cada vehiculo muestreado."
     )
 
     doc.add_heading("4.3  Proceso de medicion en campo", level=2)
