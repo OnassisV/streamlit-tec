@@ -2792,7 +2792,6 @@ def build_processing_artifacts(
         "exact_export_bytes": exact_export_bytes,
         "complementary_excel_bytes": to_excel_bytes(result["complementary_package"]["excel_sheets"]),
         "report_docx_bytes": to_generated_docx_bytes(report_label, result["informe_package"]),
-        "report_docx_model_bytes": to_generated_docx_bytes(report_label, result["informe_package"]),
         "dashboard": dashboard,
         "fugas_report_bytes": to_excel_bytes(build_fugas_report_sheets(dashboard)),
     }
@@ -2974,7 +2973,7 @@ def render_processing_dashboard(dashboard: dict[str, object], processed_payload:
         '<div class="section-copy">Descarga desde aqui el libro general, la hoja sola de base limpia, los resultados complementarios y los documentos Word del procesamiento.</div>',
         unsafe_allow_html=True,
     )
-    download_col1, download_col2, download_col3, download_col4, download_col5 = st.columns(5)
+    download_col1, download_col2, download_col3, download_col4 = st.columns(4)
     with download_col1:
         st.download_button(
             "Descargar Base limpia",
@@ -3004,21 +3003,12 @@ def render_processing_dashboard(dashboard: dict[str, object], processed_payload:
         )
     with download_col4:
         st.download_button(
-            "Descargar anexo DOCX",
+            "Descargar informe DOCX",
             data=processed_payload["report_docx_bytes"],
             file_name=output_filenames["report_docx"],
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             use_container_width=True,
-            key="download_anexo_docx",
-        )
-    with download_col5:
-        st.download_button(
-            "Descargar informe modelo",
-            data=processed_payload["report_docx_model_bytes"],
-            file_name=output_filenames["report_docx_model"],
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True,
-            key="download_informe_modelo_docx",
+            key="download_informe_docx",
         )
     st.download_button(
         "Descargar reporte de fugas",
