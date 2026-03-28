@@ -4275,7 +4275,7 @@ def _add_docx_table_with_captions(doc: Document, tabla_num: int, titulo: str, ta
         celdas = docx_table.add_row().cells
         for idx, valor in enumerate(fila):
             celdas[idx].text = "" if pd.isna(valor) else str(valor)
-    doc.add_paragraph("Elaboracion: CIDATT Consultoria S.A.", style="Caption")
+    doc.add_paragraph("Elaboraci\u00f3n: CIDATT Consultor\u00eda S.A.", style="Caption")
     doc.add_paragraph(source_text, style="Caption")
     return tabla_num + 1
 
@@ -4284,17 +4284,17 @@ def _add_docx_image_with_captions(doc: Document, imagen_num: int, titulo: str, i
     """Add a numbered image with Elaboracion and Fuente captions. Returns next image number."""
     doc.add_paragraph(f"Imagen N\u00ba {imagen_num}: {titulo}", style="Caption")
     doc.add_picture(BytesIO(image_bytes), width=Inches(5.8))
-    doc.add_paragraph("Elaboracion: CIDATT Consultoria S.A.", style="Caption")
+    doc.add_paragraph("Elaboraci\u00f3n: CIDATT Consultor\u00eda S.A.", style="Caption")
     doc.add_paragraph(source_text, style="Caption")
     return imagen_num + 1
 
 
 # ── Peaje display info ─────────────────────────────────────────────
 _PEAJE_DISPLAY = {
-    "paraiso": {"name": "Paraiso", "full": "Estacion de Peaje Paraiso (Huacho)", "accent": "#245cc6"},
-    "variante": {"name": "Variante", "full": "Estacion de Peaje Variante de Pasamayo", "accent": "#3b7be6"},
-    "serpentin": {"name": "Serpentin", "full": "Estacion de Peaje Serpentin de Pasamayo", "accent": "#1849a9"},
-    "serpentin_pesaje": {"name": "Serpentin Pesaje", "full": "Estacion de Pesaje Serpentin de Pasamayo", "accent": "#0d3d8a"},
+    "paraiso": {"name": "Para\u00edso", "full": "Estaci\u00f3n de Peaje Para\u00edso (Huacho)", "accent": "#245cc6"},
+    "variante": {"name": "Variante", "full": "Estaci\u00f3n de Peaje Variante de Pasamayo", "accent": "#3b7be6"},
+    "serpentin": {"name": "Serpent\u00edn", "full": "Estaci\u00f3n de Peaje Serpent\u00edn de Pasamayo", "accent": "#1849a9"},
+    "serpentin_pesaje": {"name": "Serpent\u00edn Pesaje", "full": "Estaci\u00f3n de Pesaje Serpent\u00edn de Pasamayo", "accent": "#0d3d8a"},
 }
 _BUCKET_ORDER = ["paraiso", "variante", "serpentin", "serpentin_pesaje"]
 
@@ -4348,7 +4348,7 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
 
     p_title = doc.add_paragraph()
     p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p_title.add_run("INFORME DE EVALUACION DEL\nTIEMPO DE ESPERA EN COLA (TEC)")
+    run = p_title.add_run("INFORME DE EVALUACI\u00d3N DEL\nTIEMPO DE ESPERA EN COLA (TEC)")
     run.font.size = Pt(22)
     run.font.bold = True
     run.font.color.rgb = RGBColor(0x0F, 0x3D, 0x91)
@@ -4357,7 +4357,7 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
 
     p_sub = doc.add_paragraph()
     p_sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p_sub.add_run("Concesion Vial: Red Vial N\u00ba 5 Tramo Ancon \u2013 Huacho \u2013 Pativilca\n(NORVIAL)")
+    run = p_sub.add_run("Concesi\u00f3n Vial: Red Vial N\u00ba 5 Tramo Anc\u00f3n \u2013 Huacho \u2013 Pativilca\n(NORVIAL)")
     run.font.size = Pt(14)
     run.font.color.rgb = RGBColor(0x16, 0x31, 0x5F)
 
@@ -4372,7 +4372,7 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
 
     p_fecha = doc.add_paragraph()
     p_fecha.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p_fecha.add_run(f"Periodo de medicion: {fecha_cover}")
+    run = p_fecha.add_run(f"Per\u00edodo de medici\u00f3n: {fecha_cover}")
     run.font.size = Pt(12)
 
     for _ in range(4):
@@ -4380,7 +4380,7 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
 
     p_elab = doc.add_paragraph()
     p_elab.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p_elab.add_run("Elaboracion: CIDATT Consultoria S.A.")
+    run = p_elab.add_run("Elaboraci\u00f3n: CIDATT Consultor\u00eda S.A.")
     run.font.size = Pt(11)
     run.font.italic = True
 
@@ -4389,22 +4389,22 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
     # ═══════════════ CONTENIDO ═══════════════
     doc.add_paragraph("CONTENIDO", style="Heading 1")
     toc_items = [
-        "CAPITULO I: INTRODUCCION",
-        "CAPITULO II: OBJETIVO DEL ESTUDIO",
-        "CAPITULO III: CONSIDERACIONES GENERALES",
-        "    3.1  Consideraciones de la evaluacion",
-        "    3.2  Metodo Utilizado para Calcular el T.E.C.",
-        "CAPITULO IV: RELEVAMIENTO DE INFORMACION DE CAMPO",
+        "CAP\u00cdTULO I: INTRODUCCI\u00d3N",
+        "CAP\u00cdTULO II: OBJETIVO DEL ESTUDIO",
+        "CAP\u00cdTULO III: CONSIDERACIONES GENERALES",
+        "    3.1  Consideraciones de la evaluaci\u00f3n",
+        "    3.2  M\u00e9todo Utilizado para Calcular el T.E.C.",
+        "CAP\u00cdTULO IV: RELEVAMIENTO DE INFORMACI\u00d3N DE CAMPO",
         "    4.1  Equipo de trabajo asignado",
         "    4.2  Material de campo",
-        "    4.3  Proceso de medicion en campo",
-        "CAPITULO V: RESULTADOS DE LA EVALUACION DEL TEC",
+        "    4.3  Proceso de medici\u00f3n en campo",
+        "CAP\u00cdTULO V: RESULTADOS DE LA EVALUACI\u00d3N DEL TEC",
     ]
     for idx, bucket in enumerate(active_buckets, 1):
         info = _PEAJE_DISPLAY.get(bucket, {"full": bucket})
         toc_items.append(f"    5.{idx}  {info['full']}")
     toc_items.append(f"    5.{len(active_buckets) + 1}  Resumen General")
-    toc_items.append("CAPITULO VI: CONCLUSIONES")
+    toc_items.append("CAP\u00cdTULO VI: CONCLUSIONES")
     toc_items.append("ANEXOS")
     for item in toc_items:
         doc.add_paragraph(item)
@@ -4412,52 +4412,52 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
     doc.add_page_break()
 
     # ═══════════════ CAPITULO I: INTRODUCCION ═══════════════
-    doc.add_heading("CAPITULO I: INTRODUCCION", level=1)
+    doc.add_heading("CAP\u00cdTULO I: INTRODUCCI\u00d3N", level=1)
     doc.add_paragraph(
-        "En el marco del cumplimiento de la medicion de los indices de servicialidad para la explotacion "
-        "y para el control de la gestion del Concesionario de la Red Vial N\u00ba 5 Tramo Ancon \u2013 Huacho \u2013 "
-        "Pativilca, CIDATT Consultoria S.A., como empresa supervisora, realizo la medicion del Tiempo de Espera "
+        "En el marco del cumplimiento de la medici\u00f3n de los \u00edndices de servicialidad para la explotaci\u00f3n "
+        "y para el control de la gesti\u00f3n del Concesionario de la Red Vial N\u00ba 5 Tramo Anc\u00f3n \u2013 Huacho \u2013 "
+        "Pativilca, CIDATT Consultor\u00eda S.A., como empresa supervisora, realiz\u00f3 la medici\u00f3n del Tiempo de Espera "
         "en Cola (TEC) en las estaciones de peaje del concesionario."
     )
     doc.add_paragraph(
-        'La congestion se medira por "Tiempo de Espera en Cola" (TEC), el que se entiende en el terreno '
-        "como el promedio de tiempo de espera por vehiculo, ponderado por el numero de vehiculos atendidos, "
+        'La congesti\u00f3n se medir\u00e1 por "Tiempo de Espera en Cola" (TEC), el que se entiende en el terreno '
+        "como el promedio de tiempo de espera por veh\u00edculo, ponderado por el n\u00famero de veh\u00edculos atendidos, "
         "no debiendo superar los 3 minutos."
     )
 
     doc.add_page_break()
 
     # ═══════════════ CAPITULO II: OBJETIVO ═══════════════
-    doc.add_heading("CAPITULO II: OBJETIVO DEL ESTUDIO", level=1)
+    doc.add_heading("CAP\u00cdTULO II: OBJETIVO DEL ESTUDIO", level=1)
     doc.add_paragraph(
-        f"Realizar la medicion del TEC en las estaciones de peaje del Concesionario de la Red Vial "
-        f"N\u00ba 5 Tramo Ancon \u2013 Huacho \u2013 Pativilca (NORVIAL): {peaje_names_list}."
+        f"Realizar la medici\u00f3n del TEC en las estaciones de peaje del Concesionario de la Red Vial "
+        f"N\u00ba 5 Tramo Anc\u00f3n \u2013 Huacho \u2013 Pativilca (NORVIAL): {peaje_names_list}."
     )
 
     doc.add_page_break()
 
     # ═══════════════ CAPITULO III: CONSIDERACIONES ═══════════════
-    doc.add_heading("CAPITULO III: CONSIDERACIONES GENERALES", level=1)
+    doc.add_heading("CAP\u00cdTULO III: CONSIDERACIONES GENERALES", level=1)
 
-    doc.add_heading("3.1  Consideraciones de la evaluacion", level=2)
+    doc.add_heading("3.1  Consideraciones de la evaluaci\u00f3n", level=2)
     doc.add_paragraph(
-        "La medicion del TEC se realizo bajo las siguientes consideraciones y en los plazos "
+        "La medici\u00f3n del TEC se realiz\u00f3 bajo las siguientes consideraciones y en los plazos "
         "estipulados por el Regulador:"
     )
     doc.add_paragraph(
-        "Las mediciones se realizaron en todas las estaciones de peaje operativas bajo la administracion del Concesionario.",
+        "Las mediciones se realizaron en todas las estaciones de peaje operativas bajo la administraci\u00f3n del Concesionario.",
         style="List Bullet",
     )
     doc.add_paragraph(
-        "El tiempo de medicion considero como minimo tres horas de control, que corresponden al periodo de control establecido.",
+        "El tiempo de medici\u00f3n consider\u00f3 como m\u00ednimo tres horas de control, que corresponden al per\u00edodo de control establecido.",
         style="List Bullet",
     )
     doc.add_paragraph(
-        "La medicion se realizo en todas las casetas y sentidos de cobro operativos durante el periodo de medicion.",
+        "La medici\u00f3n se realiz\u00f3 en todas las casetas y sentidos de cobro operativos durante el per\u00edodo de medici\u00f3n.",
         style="List Bullet",
     )
     doc.add_paragraph(
-        "El metodo para la recoleccion de datos empleado fue el metodo de las placas de rodaje.",
+        "El m\u00e9todo para la recolecci\u00f3n de datos empleado fue el m\u00e9todo de las placas de rodaje.",
         style="List Bullet",
     )
 
@@ -4468,21 +4468,21 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
     if not tabla_programacion.empty:
         tabla_num = _add_docx_table_with_captions(
             doc, tabla_num,
-            "Estaciones de peaje, fecha y horarios en los que se realizo la medicion del TEC",
+            "Estaciones de peaje, fecha y horarios en los que se realiz\u00f3 la medici\u00f3n del TEC",
             tabla_programacion, source_text,
         )
 
-    doc.add_heading("3.2  Metodo Utilizado para Calcular el T.E.C.", level=2)
-    doc.add_heading("Esquema descriptivo de la medicion de campo", level=3)
+    doc.add_heading("3.2  M\u00e9todo Utilizado para Calcular el T.E.C.", level=2)
+    doc.add_heading("Esquema descriptivo de la medici\u00f3n de campo", level=3)
     doc.add_paragraph(
-        "Para los fines especificos de la evaluacion, el TEC esta definido como el tiempo en que "
-        "el usuario detiene su vehiculo en la cola para su atencion, hasta el momento en que finaliza "
-        "su atencion en la caseta de cobro."
+        "Para los fines espec\u00edficos de la evaluaci\u00f3n, el TEC est\u00e1 definido como el tiempo en que "
+        "el usuario detiene su veh\u00edculo en la cola para su atenci\u00f3n, hasta el momento en que finaliza "
+        "su atenci\u00f3n en la caseta de cobro."
     )
-    doc.add_heading("Metodo de Placas de Rodaje", level=3)
+    doc.add_heading("M\u00e9todo de Placas de Rodaje", level=3)
     doc.add_paragraph(
-        "El metodo de las placas de rodaje especificado en el contrato de concesion considera relevar "
-        "los siguientes parametros:"
+        "El m\u00e9todo de las placas de rodaje especificado en el contrato de concesi\u00f3n considera relevar "
+        "los siguientes par\u00e1metros:"
     )
     doc.add_paragraph("Hora en que se detienen para formar cola.", style="List Bullet")
     doc.add_paragraph(
@@ -4490,45 +4490,45 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
         style="List Bullet",
     )
     doc.add_paragraph(
-        "Para cada vehiculo muestreado se procedio a calcular el TEC basado en la diferencia entre "
-        "la hora de finalizada la atencion en caseta y la hora en que se detuvo para hacer o no cola."
+        "Para cada veh\u00edculo muestreado se procedi\u00f3 a calcular el TEC basado en la diferencia entre "
+        "la hora de finalizada la atenci\u00f3n en caseta y la hora en que se detuvo para hacer o no cola."
     )
 
     doc.add_page_break()
 
     # ═══════════════ CAPITULO IV: RELEVAMIENTO ═══════════════
-    doc.add_heading("CAPITULO IV: RELEVAMIENTO DE INFORMACION DE CAMPO", level=1)
+    doc.add_heading("CAP\u00cdTULO IV: RELEVAMIENTO DE INFORMACI\u00d3N DE CAMPO", level=1)
 
-    doc.add_heading("4.1  Equipo de trabajo asignado para la medicion del TEC", level=2)
+    doc.add_heading("4.1  Equipo de trabajo asignado para la medici\u00f3n del TEC", level=2)
     doc.add_paragraph(
-        "Para la medicion se asigno un equipo conformado por un Jefe de Proyecto, un Especialista "
-        "en medicion de TEC, supervisores de campo y aforadores."
+        "Para la medici\u00f3n se asign\u00f3 un equipo conformado por un Jefe de Proyecto, un Especialista "
+        "en medici\u00f3n de TEC, supervisores de campo y aforadores."
     )
 
     tabla_personal = informe_package.get("tabla_personal", pd.DataFrame())
     if not tabla_personal.empty:
         tabla_num = _add_docx_table_with_captions(
             doc, tabla_num,
-            "Personal asignado para realizar la medicion del TEC",
+            "Personal asignado para realizar la medici\u00f3n del TEC",
             tabla_personal, source_text,
         )
 
     doc.add_heading("4.2  Material de campo", level=2)
     doc.add_paragraph(
-        "Para obtener la muestra de flujo vehicular se empleo un aplicativo web desarrollado por el Consultor, "
-        "que permitio el registro en tiempo real y la correcta unificacion de los tiempos por placa de cada vehiculo muestreado."
+        "Para obtener la muestra de flujo vehicular se emple\u00f3 un aplicativo web desarrollado por el Consultor, "
+        "que permiti\u00f3 el registro en tiempo real y la correcta unificaci\u00f3n de los tiempos por placa de cada veh\u00edculo muestreado."
     )
 
-    doc.add_heading("4.3  Proceso de medicion en campo", level=2)
+    doc.add_heading("4.3  Proceso de medici\u00f3n en campo", level=2)
     doc.add_paragraph(
-        "El TEC esta definido como el tiempo que un vehiculo tiene desde que llega al sistema y se detiene, "
+        "El TEC est\u00e1 definido como el tiempo que un veh\u00edculo tiene desde que llega al sistema y se detiene, "
         "hasta el momento en que el usuario es atendido y abandona la caseta de cobro."
     )
 
     doc.add_page_break()
 
     # ═══════════════ CAPITULO V: RESULTADOS ═══════════════
-    doc.add_heading("CAPITULO V: RESULTADOS DE LA EVALUACION DEL TEC", level=1)
+    doc.add_heading("CAP\u00cdTULO V: RESULTADOS DE LA EVALUACI\u00d3N DEL TEC", level=1)
 
     if not df_resultados.empty and "PEAJE_BUCKET" in df_resultados.columns:
         for section_idx, bucket in enumerate(active_buckets, 1):
@@ -4550,15 +4550,15 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
 
             tec_caseta_display = tec_caseta.rename(columns={
                 "CASETA": "Caseta Controlada",
-                "SENTIDO": "Sentido de Circulacion",
+                "SENTIDO": "Sentido de Circulaci\u00f3n",
                 "TEC_MINUTOS": "Tiempo de Espera en Cola - TEC (min)",
-                "VEHICULOS": "Vehiculos evaluados",
+                "VEHICULOS": "Veh\u00edculos evaluados",
             })
 
             fila_max = tec_caseta.sort_values("TEC_MINUTOS", ascending=False).iloc[0]
             doc.add_paragraph(
                 f"En la Tabla N\u00ba {tabla_num}, se presentan los resultados del TEC por caseta y sentido "
-                f"para {info['name']}. El mayor promedio se observo en la caseta {int(fila_max['CASETA'])} "
+                f"para {info['name']}. El mayor promedio se observ\u00f3 en la caseta {int(fila_max['CASETA'])} "
                 f"- {fila_max['SENTIDO']}, con {fila_max['TEC_MINUTOS']:.2f} minutos."
             )
             tabla_num = _add_docx_table_with_captions(
@@ -4577,9 +4577,9 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
             tec_sentido["TEC_MINUTOS"] = pd.to_numeric(tec_sentido["TEC_MINUTOS"], errors="coerce").round(2)
 
             tec_sentido_display = tec_sentido.rename(columns={
-                "SENTIDO": "Sentido de Circulacion",
+                "SENTIDO": "Sentido de Circulaci\u00f3n",
                 "TEC_MINUTOS": "Tiempo de Espera en Cola - TEC (min)",
-                "VEHICULOS": "Vehiculos evaluados",
+                "VEHICULOS": "Veh\u00edculos evaluados",
             })
 
             max_sentido = tec_sentido.sort_values("TEC_MINUTOS", ascending=False).iloc[0]
@@ -4587,7 +4587,7 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
             if cumple:
                 doc.add_paragraph(
                     f"En la Tabla N\u00ba {tabla_num}, observamos que los resultados de {info['name']} "
-                    f"no superan los 3 minutos promedio para la atencion de los usuarios."
+                    f"no superan los 3 minutos promedio para la atenci\u00f3n de los usuarios."
                 )
             else:
                 doc.add_paragraph(
@@ -4609,13 +4609,13 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
             )
             cola_display = cola_maxima.rename(columns={
                 "CASETA": "Caseta Controlada",
-                "SENTIDO": "Sentido de Circulacion",
-                "COLA_MAXIMA_REAL": "Cola maxima real",
-                "VEHICULOS": "Vehiculos evaluados",
+                "SENTIDO": "Sentido de Circulaci\u00f3n",
+                "COLA_MAXIMA_REAL": "Cola m\u00e1xima real",
+                "VEHICULOS": "Veh\u00edculos evaluados",
             })
             tabla_num = _add_docx_table_with_captions(
                 doc, tabla_num,
-                f"Cola maxima de espera real por caseta en {info['name']}",
+                f"Cola m\u00e1xima de espera real por caseta en {info['name']}",
                 cola_display, source_text,
             )
 
@@ -4623,23 +4623,23 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
             tabla_freq = formatear_tabla_frecuencia(build_frequency_table_for_bucket(sub_df, bucket))
             if not tabla_freq.empty and len(tabla_freq) > 0:
                 doc.add_paragraph(
-                    f"En la Tabla N\u00ba {tabla_num} se muestra la frecuencia de usuarios segun el tamano "
-                    f"de cola en {info['name']} durante el periodo de evaluacion."
+                    f"En la Tabla N\u00ba {tabla_num} se muestra la frecuencia de usuarios seg\u00fan el tama\u00f1o "
+                    f"de cola en {info['name']} durante el per\u00edodo de evaluaci\u00f3n."
                 )
                 tabla_num = _add_docx_table_with_captions(
                     doc, tabla_num,
-                    f"Frecuencia de usuarios segun tamano de cola en {info['name']} por caseta",
+                    f"Frecuencia de usuarios seg\u00fan tama\u00f1o de cola en {info['name']} por caseta",
                     tabla_freq, source_text,
                 )
 
             # ── Grafico frecuencia porcentual ──
             series_pct = build_frequency_percentage_series(sub_df, [bucket])
-            chart_title = f"Frecuencias de cola en vehiculos observadas en {info['full']}"
+            chart_title = f"Frecuencias de cola en veh\u00edculos observadas en {info['full']}"
             chart_bytes = render_frequency_chart_bytes(chart_title, series_pct, info["accent"])
             if chart_bytes is not None:
                 imagen_num = _add_docx_image_with_captions(
                     doc, imagen_num,
-                    f"Frecuencias de cola en vehiculos observadas en {info['name']}",
+                    f"Frecuencias de cola en veh\u00edculos observadas en {info['name']}",
                     chart_bytes, source_text,
                 )
 
@@ -4658,7 +4658,7 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
             )
             tabla_num = _add_docx_table_with_captions(
                 doc, tabla_num,
-                "Promedio de TEC por peaje/pesaje segun sentido (resumen general)",
+                "Promedio de TEC por peaje/pesaje seg\u00fan sentido (resumen general)",
                 tabla_tec_peaje, source_text,
             )
 
@@ -4696,15 +4696,15 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
             doc.add_paragraph(
                 "Del presente Informe, se evidencia que los valores obtenidos por los niveles de servicio "
                 "que el Concesionario tiene actualmente se encuentran dentro de los niveles que deben ser cumplidos, "
-                "debido a que durante el periodo muestreado en cada unidad de peaje/pesaje el promedio de la muestra "
-                "no supero los 3 minutos; lo cual no amerita por ahora la modificacion del sistema de atencion."
+                "debido a que durante el per\u00edodo muestreado en cada unidad de peaje/pesaje el promedio de la muestra "
+                "no super\u00f3 los 3 minutos; lo cual no amerita por ahora la modificaci\u00f3n del sistema de atenci\u00f3n."
             )
         else:
             doc.add_paragraph(
                 f"Del presente Informe, se evidencia que los valores obtenidos por los niveles de servicio "
                 f"superan el umbral esperado en {fila_critica['Peaje']} - {fila_critica['Sentido de Circulacion']}, "
                 f"donde el promedio alcanzado fue de {valor_critico:.2f} minutos; por lo que corresponde revisar "
-                f"las condiciones operativas del sistema de atencion."
+                f"las condiciones operativas del sistema de atenci\u00f3n."
             )
     else:
         doc.add_paragraph("No se cuenta con resultados suficientes para emitir conclusiones.")
@@ -4720,9 +4720,9 @@ def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object
 
     # ═══════════════ ANEXOS ═══════════════
     doc.add_heading("ANEXOS", level=1)
-    doc.add_heading("Anexo 01: Formato utilizado para relevar la informacion de campo", level=3)
+    doc.add_heading("Anexo 01: Formato utilizado para relevar la informaci\u00f3n de campo", level=3)
     doc.add_paragraph("(Adjuntar formato de campo utilizado)")
-    doc.add_heading("Anexo 02: Planilla de registro y calculo", level=3)
+    doc.add_heading("Anexo 02: Planilla de registro y c\u00e1lculo", level=3)
     doc.add_paragraph("(Adjuntar planilla de registro)")
 
     output = BytesIO()
