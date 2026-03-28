@@ -2791,8 +2791,8 @@ def build_processing_artifacts(
         "base_limpia_only_bytes": to_excel_bytes({"base_limpia": export_tables["base_limpia"]}),
         "exact_export_bytes": exact_export_bytes,
         "complementary_excel_bytes": to_excel_bytes(result["complementary_package"]["excel_sheets"]),
-        "report_docx_bytes": to_docx_bytes(report_label, result["informe_package"]),
-        "report_docx_model_bytes": to_templated_docx_bytes(report_label, result["informe_package"]),
+        "report_docx_bytes": to_generated_docx_bytes(report_label, result["informe_package"]),
+        "report_docx_model_bytes": to_generated_docx_bytes(report_label, result["informe_package"]),
         "dashboard": dashboard,
         "fugas_report_bytes": to_excel_bytes(build_fugas_report_sheets(dashboard)),
     }
@@ -4273,34 +4273,476 @@ def to_exact_excel_bytes(export_package: dict[str, pd.DataFrame]) -> bytes:
     return output.getvalue()
 
 
-def to_docx_bytes(report_label: str, informe_package: dict[str, object]) -> bytes:
+def _add_docx_table_with_captions(doc: Document, tabla_num: int, titulo: str, tabla: pd.DataFrame, source_text: str) -> int:
+    """Add a numbered table with Elaboracion and Fuente captions. Returns next table number."""
+    doc.add_paragraph(f"Tabla N\u00ba {tabla_num}: {titulo}", style="Caption")
+    docx_table = doc.add_table(rows=1, cols=len(tabla.columns))
+    docx_table.style = "Table Grid"
+    docx_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    for idx, columna in enumerate(tabla.columns):
+        docx_table.rows[0].cells[idx].text = str(columna)
+    for fila in tabla.itertuples(index=False):
+        celdas = docx_table.add_row().cells
+        for idx, valor in enumerate(fila):
+            celdas[idx].text = "" if pd.isna(valor) else str(valor)
+    doc.add_paragraph("Elaboracion: CIDATT Consultoria S.A.", style="Caption")
+    doc.add_paragraph(source_text, style="Caption")
+    return tabla_num + 1
+
+
+def _add_docx_image_with_captions(doc: Document, imagen_num: int, titulo: str, image_bytes: bytes, source_text: str) -> int:
+    """Add a numbered image with Elaboracion and Fuente captions. Returns next image number."""
+    doc.add_paragraph(f"Imagen N\u00ba {imagen_num}: {titulo}", style="Caption")
+    doc.add_picture(BytesIO(image_bytes), width=Inches(5.8))
+    doc.add_paragraph("Elaboracion: CIDATT Consultoria S.A.", style="Caption")
+    doc.add_paragraph(source_text, style="Caption")
+    return imagen_num + 1
+
+
+# ── Peaje display info ─────────────────────────────────────────────
+_PEAJE_DISPLAY = {
+    "paraiso": {"name": "Paraiso", "full": "Estacion de Peaje Paraiso (Huacho)", "accent": "#245cc6"},
+    "variante": {"name": "Variante", "full": "Estacion de Peaje Variante de Pasamayo", "accent": "#3b7be6"},
+    "serpentin": {"name": "Serpentin", "full": "Estacion de Peaje Serpentin de Pasamayo", "accent": "#1849a9"},
+    "serpentin_pesaje": {"name": "Serpentin Pesaje", "full": "Estacion de Pesaje Serpentin de Pasamayo", "accent": "#0d3d8a"},
+}
+_BUCKET_ORDER = ["paraiso", "variante", "serpentin", "serpentin_pesaje"]
+
+
+def to_generated_docx_bytes(report_label: str, informe_package: dict[str, object]) -> bytes:
+    """Build the full TEC report from scratch, organized by peaje."""
+    from docx.shared import Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.section import WD_ORIENT
+
     doc = Document()
-    doc.add_heading(f"Tablas de resultados {report_label}", level=1)
+
+    style = doc.styles["Normal"]
+    style.font.name = "Calibri"
+    style.font.size = Pt(11)
+
+    df_resultados = informe_package.get("df_resultados")
+    if df_resultados is None or df_resultados.empty:
+        df_resultados = pd.DataFrame()
+    source_text = build_report_date_range_text(df_resultados)
+
+    # Detect which peajes are present
+    if not df_resultados.empty and "PEAJE_BUCKET" in df_resultados.columns:
+        active_buckets = [b for b in _BUCKET_ORDER if b in df_resultados["PEAJE_BUCKET"].unique()]
+    else:
+        active_buckets = []
+
+    peaje_names_list = ", ".join(_PEAJE_DISPLAY.get(b, {}).get("name", b) for b in active_buckets) or "Sin datos"
+
+    # Date range for cover
+    fechas = pd.to_datetime(df_resultados.get("FECHA"), errors="coerce").dropna().sort_values().dt.normalize().unique() if not df_resultados.empty else []
+    meses_map = {
+        1: "enero", 2: "febrero", 3: "marzo", 4: "abril", 5: "mayo", 6: "junio",
+        7: "julio", 8: "agosto", 9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre",
+    }
+
+    def _fmt_fecha(f):
+        f = pd.Timestamp(f)
+        return f"{f.day:02d} de {meses_map[f.month]} de {f.year}"
+
+    if len(fechas) >= 2:
+        fecha_cover = f"{_fmt_fecha(fechas[0])} al {_fmt_fecha(fechas[-1])}"
+    elif len(fechas) == 1:
+        fecha_cover = _fmt_fecha(fechas[0])
+    else:
+        fecha_cover = "Fecha no determinada"
+
+    # ═══════════════ PORTADA ═══════════════
+    for _ in range(4):
+        doc.add_paragraph("")
+
+    p_title = doc.add_paragraph()
+    p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p_title.add_run("INFORME DE EVALUACION DEL\nTIEMPO DE ESPERA EN COLA (TEC)")
+    run.font.size = Pt(22)
+    run.font.bold = True
+    run.font.color.rgb = RGBColor(0x0F, 0x3D, 0x91)
+
+    doc.add_paragraph("")
+
+    p_sub = doc.add_paragraph()
+    p_sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p_sub.add_run("Concesion Vial: Red Vial N\u00ba 5 Tramo Ancon \u2013 Huacho \u2013 Pativilca\n(NORVIAL)")
+    run.font.size = Pt(14)
+    run.font.color.rgb = RGBColor(0x16, 0x31, 0x5F)
+
+    doc.add_paragraph("")
+
+    p_peajes = doc.add_paragraph()
+    p_peajes.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p_peajes.add_run(f"Peajes evaluados: {peaje_names_list}")
+    run.font.size = Pt(12)
+
+    doc.add_paragraph("")
+
+    p_fecha = doc.add_paragraph()
+    p_fecha.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p_fecha.add_run(f"Periodo de medicion: {fecha_cover}")
+    run.font.size = Pt(12)
+
+    for _ in range(4):
+        doc.add_paragraph("")
+
+    p_elab = doc.add_paragraph()
+    p_elab.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p_elab.add_run("Elaboracion: CIDATT Consultoria S.A.")
+    run.font.size = Pt(11)
+    run.font.italic = True
+
+    doc.add_page_break()
+
+    # ═══════════════ CONTENIDO ═══════════════
+    doc.add_paragraph("CONTENIDO", style="Heading 1")
+    toc_items = [
+        "CAPITULO I: INTRODUCCION",
+        "CAPITULO II: OBJETIVO DEL ESTUDIO",
+        "CAPITULO III: CONSIDERACIONES GENERALES",
+        "    3.1  Consideraciones de la evaluacion",
+        "    3.2  Metodo Utilizado para Calcular el T.E.C.",
+        "CAPITULO IV: RELEVAMIENTO DE INFORMACION DE CAMPO",
+        "    4.1  Equipo de trabajo asignado",
+        "    4.2  Material de campo",
+        "    4.3  Proceso de medicion en campo",
+        "CAPITULO V: RESULTADOS DE LA EVALUACION DEL TEC",
+    ]
+    for idx, bucket in enumerate(active_buckets, 1):
+        info = _PEAJE_DISPLAY.get(bucket, {"full": bucket})
+        toc_items.append(f"    5.{idx}  {info['full']}")
+    toc_items.append(f"    5.{len(active_buckets) + 1}  Resumen General")
+    toc_items.append("CAPITULO VI: CONCLUSIONES")
+    toc_items.append("ANEXOS")
+    for item in toc_items:
+        doc.add_paragraph(item)
+
+    doc.add_page_break()
+
+    # ═══════════════ CAPITULO I: INTRODUCCION ═══════════════
+    doc.add_heading("CAPITULO I: INTRODUCCION", level=1)
     doc.add_paragraph(
-        "Base utilizada: registros finales limpios. La cola de espera se define como los usuarios "
-        "que aun esperan llegar a la caseta cuando arriba un nuevo vehiculo."
+        "En el marco del cumplimiento de la medicion de los indices de servicialidad para la explotacion "
+        "y para el control de la gestion del Concesionario de la Red Vial N\u00ba 5 Tramo Ancon \u2013 Huacho \u2013 "
+        "Pativilca, CIDATT Consultoria S.A., como empresa supervisora, realizo la medicion del Tiempo de Espera "
+        "en Cola (TEC) en las estaciones de peaje del concesionario."
     )
-    agregar_tabla_docx(doc, "Tabla 1. Tiempo de Espera en Cola por caseta y sentido", informe_package["tabla_tec_caseta"])
-    agregar_tabla_docx(doc, "Tabla 2. Promedio de tiempo de espera en cola por peaje segun sentido", informe_package["tabla_tec_peaje"])
-    agregar_tabla_docx(doc, "Tabla 3. Cola maxima de espera real por caseta", informe_package["tabla_cola_maxima"])
-    agregar_tabla_docx(
-        doc,
-        "Tabla 4. Frecuencia de usuarios segun tamano de cola de espera para la estacion de peaje Paraiso por caseta",
-        informe_package["tabla_frecuencia_paraiso"],
+    doc.add_paragraph(
+        'La congestion se medira por "Tiempo de Espera en Cola" (TEC), el que se entiende en el terreno '
+        "como el promedio de tiempo de espera por vehiculo, ponderado por el numero de vehiculos atendidos, "
+        "no debiendo superar los 3 minutos."
     )
-    agregar_tabla_docx(
-        doc,
-        "Tabla 5. Frecuencia de usuarios segun tamano de cola de espera para la estacion de peaje Variante por caseta",
-        informe_package["tabla_frecuencia_variante"],
+
+    doc.add_page_break()
+
+    # ═══════════════ CAPITULO II: OBJETIVO ═══════════════
+    doc.add_heading("CAPITULO II: OBJETIVO DEL ESTUDIO", level=1)
+    doc.add_paragraph(
+        f"Realizar la medicion del TEC en las estaciones de peaje del Concesionario de la Red Vial "
+        f"N\u00ba 5 Tramo Ancon \u2013 Huacho \u2013 Pativilca (NORVIAL): {peaje_names_list}."
     )
-    doc.add_paragraph("Texto de apoyo para conclusiones", style="Heading 2")
-    for texto in informe_package["texto_informe"]["Texto sugerido para informe"]:
-        doc.add_paragraph(texto, style="List Bullet")
+
+    doc.add_page_break()
+
+    # ═══════════════ CAPITULO III: CONSIDERACIONES ═══════════════
+    doc.add_heading("CAPITULO III: CONSIDERACIONES GENERALES", level=1)
+
+    doc.add_heading("3.1  Consideraciones de la evaluacion", level=2)
+    doc.add_paragraph(
+        "La medicion del TEC se realizo bajo las siguientes consideraciones y en los plazos "
+        "estipulados por el Regulador:"
+    )
+    doc.add_paragraph(
+        "Las mediciones se realizaron en todas las estaciones de peaje operativas bajo la administracion del Concesionario.",
+        style="List Bullet",
+    )
+    doc.add_paragraph(
+        "El tiempo de medicion considero como minimo tres horas de control, que corresponden al periodo de control establecido.",
+        style="List Bullet",
+    )
+    doc.add_paragraph(
+        "La medicion se realizo en todas las casetas y sentidos de cobro operativos durante el periodo de medicion.",
+        style="List Bullet",
+    )
+    doc.add_paragraph(
+        "El metodo para la recoleccion de datos empleado fue el metodo de las placas de rodaje.",
+        style="List Bullet",
+    )
+
+    tabla_num = 1
+    imagen_num = 1
+
+    tabla_programacion = informe_package.get("tabla_programacion", pd.DataFrame())
+    if not tabla_programacion.empty:
+        tabla_num = _add_docx_table_with_captions(
+            doc, tabla_num,
+            "Estaciones de peaje, fecha y horarios en los que se realizo la medicion del TEC",
+            tabla_programacion, source_text,
+        )
+
+    doc.add_heading("3.2  Metodo Utilizado para Calcular el T.E.C.", level=2)
+    doc.add_heading("Esquema descriptivo de la medicion de campo", level=3)
+    doc.add_paragraph(
+        "Para los fines especificos de la evaluacion, el TEC esta definido como el tiempo en que "
+        "el usuario detiene su vehiculo en la cola para su atencion, hasta el momento en que finaliza "
+        "su atencion en la caseta de cobro."
+    )
+    doc.add_heading("Metodo de Placas de Rodaje", level=3)
+    doc.add_paragraph(
+        "El metodo de las placas de rodaje especificado en el contrato de concesion considera relevar "
+        "los siguientes parametros:"
+    )
+    doc.add_paragraph("Hora en que se detienen para formar cola.", style="List Bullet")
+    doc.add_paragraph(
+        "Tiempo en que sale de la caseta de cobro; por lo tanto, cada caseta de cobro es tratada como un sistema de cola independiente.",
+        style="List Bullet",
+    )
+    doc.add_paragraph(
+        "Para cada vehiculo muestreado se procedio a calcular el TEC basado en la diferencia entre "
+        "la hora de finalizada la atencion en caseta y la hora en que se detuvo para hacer o no cola."
+    )
+
+    doc.add_page_break()
+
+    # ═══════════════ CAPITULO IV: RELEVAMIENTO ═══════════════
+    doc.add_heading("CAPITULO IV: RELEVAMIENTO DE INFORMACION DE CAMPO", level=1)
+
+    doc.add_heading("4.1  Equipo de trabajo asignado para la medicion del TEC", level=2)
+    doc.add_paragraph(
+        "Para la medicion se asigno un equipo conformado por un Jefe de Proyecto, un Especialista "
+        "en medicion de TEC, supervisores de campo y aforadores."
+    )
+
+    tabla_personal = informe_package.get("tabla_personal", pd.DataFrame())
+    if not tabla_personal.empty:
+        tabla_num = _add_docx_table_with_captions(
+            doc, tabla_num,
+            "Personal asignado para realizar la medicion del TEC",
+            tabla_personal, source_text,
+        )
+
+    doc.add_heading("4.2  Material de campo", level=2)
+    doc.add_paragraph(
+        "Para obtener la muestra de flujo vehicular se empleo un formato disenado por el Consultor, "
+        "que permitio relevar la informacion de cada vehiculo muestreado."
+    )
+
+    doc.add_heading("4.3  Proceso de medicion en campo", level=2)
+    doc.add_paragraph(
+        "El TEC esta definido como el tiempo que un vehiculo tiene desde que llega al sistema y se detiene, "
+        "hasta el momento en que el usuario es atendido y abandona la caseta de cobro."
+    )
+
+    doc.add_page_break()
+
+    # ═══════════════ CAPITULO V: RESULTADOS ═══════════════
+    doc.add_heading("CAPITULO V: RESULTADOS DE LA EVALUACION DEL TEC", level=1)
+
+    if not df_resultados.empty and "PEAJE_BUCKET" in df_resultados.columns:
+        for section_idx, bucket in enumerate(active_buckets, 1):
+            info = _PEAJE_DISPLAY.get(bucket, {"name": bucket, "full": bucket, "accent": "#245cc6"})
+            sub_df = df_resultados[df_resultados["PEAJE_BUCKET"] == bucket].copy()
+            if sub_df.empty:
+                continue
+
+            doc.add_heading(f"5.{section_idx}  {info['full']}", level=2)
+
+            # ── TEC por caseta y sentido ──
+            tec_caseta = (
+                sub_df.groupby(["CASETA", "SENTIDO"], dropna=False)
+                .agg(TEC_MINUTOS=("T_TEC_FINAL_MINUTOS", "mean"), VEHICULOS=("PLACA_FINAL", "size"))
+                .reset_index()
+                .sort_values(["SENTIDO", "CASETA"])
+            )
+            tec_caseta["TEC_MINUTOS"] = pd.to_numeric(tec_caseta["TEC_MINUTOS"], errors="coerce").round(2)
+
+            tec_caseta_display = tec_caseta.rename(columns={
+                "CASETA": "Caseta Controlada",
+                "SENTIDO": "Sentido de Circulacion",
+                "TEC_MINUTOS": "Tiempo de Espera en Cola - TEC (min)",
+                "VEHICULOS": "Vehiculos evaluados",
+            })
+
+            fila_max = tec_caseta.sort_values("TEC_MINUTOS", ascending=False).iloc[0]
+            doc.add_paragraph(
+                f"En la Tabla N\u00ba {tabla_num}, se presentan los resultados del TEC por caseta y sentido "
+                f"para {info['name']}. El mayor promedio se observo en la caseta {int(fila_max['CASETA'])} "
+                f"- {fila_max['SENTIDO']}, con {fila_max['TEC_MINUTOS']:.2f} minutos."
+            )
+            tabla_num = _add_docx_table_with_captions(
+                doc, tabla_num,
+                f"Tiempos de Espera en Cola por caseta en {info['name']}",
+                tec_caseta_display, source_text,
+            )
+
+            # ── TEC promedio por sentido ──
+            tec_sentido = (
+                sub_df.groupby(["SENTIDO"], dropna=False)
+                .agg(TEC_MINUTOS=("T_TEC_FINAL_MINUTOS", "mean"), VEHICULOS=("PLACA_FINAL", "size"))
+                .reset_index()
+                .sort_values("SENTIDO")
+            )
+            tec_sentido["TEC_MINUTOS"] = pd.to_numeric(tec_sentido["TEC_MINUTOS"], errors="coerce").round(2)
+
+            tec_sentido_display = tec_sentido.rename(columns={
+                "SENTIDO": "Sentido de Circulacion",
+                "TEC_MINUTOS": "Tiempo de Espera en Cola - TEC (min)",
+                "VEHICULOS": "Vehiculos evaluados",
+            })
+
+            max_sentido = tec_sentido.sort_values("TEC_MINUTOS", ascending=False).iloc[0]
+            cumple = max_sentido["TEC_MINUTOS"] <= 3
+            if cumple:
+                doc.add_paragraph(
+                    f"En la Tabla N\u00ba {tabla_num}, observamos que los resultados de {info['name']} "
+                    f"no superan los 3 minutos promedio para la atencion de los usuarios."
+                )
+            else:
+                doc.add_paragraph(
+                    f"En la Tabla N\u00ba {tabla_num}, observamos que en {info['name']} - {max_sentido['SENTIDO']} "
+                    f"se alcanza {max_sentido['TEC_MINUTOS']:.2f} minutos promedio, superando los 3 minutos."
+                )
+            tabla_num = _add_docx_table_with_captions(
+                doc, tabla_num,
+                f"Promedio de TEC por sentido en {info['name']}",
+                tec_sentido_display, source_text,
+            )
+
+            # ── Cola maxima real ──
+            cola_maxima = (
+                sub_df.groupby(["CASETA", "SENTIDO"], dropna=False)
+                .agg(COLA_MAXIMA_REAL=("COLA_ESPERA_USUARIOS", "max"), VEHICULOS=("PLACA_FINAL", "size"))
+                .reset_index()
+                .sort_values(["SENTIDO", "CASETA"])
+            )
+            cola_display = cola_maxima.rename(columns={
+                "CASETA": "Caseta Controlada",
+                "SENTIDO": "Sentido de Circulacion",
+                "COLA_MAXIMA_REAL": "Cola maxima real",
+                "VEHICULOS": "Vehiculos evaluados",
+            })
+            tabla_num = _add_docx_table_with_captions(
+                doc, tabla_num,
+                f"Cola maxima de espera real por caseta en {info['name']}",
+                cola_display, source_text,
+            )
+
+            # ── Frecuencia de usuarios por tamano de cola ──
+            tabla_freq = formatear_tabla_frecuencia(build_frequency_table_for_bucket(sub_df, bucket))
+            if not tabla_freq.empty and len(tabla_freq) > 0:
+                doc.add_paragraph(
+                    f"En la Tabla N\u00ba {tabla_num} se muestra la frecuencia de usuarios segun el tamano "
+                    f"de cola en {info['name']} durante el periodo de evaluacion."
+                )
+                tabla_num = _add_docx_table_with_captions(
+                    doc, tabla_num,
+                    f"Frecuencia de usuarios segun tamano de cola en {info['name']} por caseta",
+                    tabla_freq, source_text,
+                )
+
+            # ── Grafico frecuencia porcentual ──
+            series_pct = build_frequency_percentage_series(sub_df, [bucket])
+            chart_title = f"Frecuencias de cola en vehiculos observadas en {info['full']}"
+            chart_bytes = render_frequency_chart_bytes(chart_title, series_pct, info["accent"])
+            if chart_bytes is not None:
+                imagen_num = _add_docx_image_with_captions(
+                    doc, imagen_num,
+                    f"Frecuencias de cola en vehiculos observadas en {info['name']}",
+                    chart_bytes, source_text,
+                )
+
+            doc.add_page_break()
+
+        # ── 5.X Resumen General ──
+        resumen_section = len(active_buckets) + 1
+        doc.add_heading(f"5.{resumen_section}  Resumen General", level=2)
+
+        # Tabla resumen TEC por peaje y sentido (todos juntos)
+        tabla_tec_peaje = informe_package.get("tabla_tec_peaje", pd.DataFrame())
+        if not tabla_tec_peaje.empty:
+            doc.add_paragraph(
+                f"En la Tabla N\u00ba {tabla_num}, se resumen los promedios de TEC por peaje y sentido "
+                "para todas las estaciones evaluadas."
+            )
+            tabla_num = _add_docx_table_with_captions(
+                doc, tabla_num,
+                "Promedio de TEC por peaje/pesaje segun sentido (resumen general)",
+                tabla_tec_peaje, source_text,
+            )
+
+        # Cumplimiento general
+        fila_critica = None
+        if not tabla_tec_peaje.empty:
+            col_tec = "Tiempo de Espera en Cola - TEC"
+            if col_tec in tabla_tec_peaje.columns:
+                tabla_tec_peaje[col_tec] = pd.to_numeric(tabla_tec_peaje[col_tec], errors="coerce")
+                fila_critica = tabla_tec_peaje.sort_values(col_tec, ascending=False).iloc[0]
+                valor_critico = float(fila_critica[col_tec])
+                if valor_critico <= 3:
+                    doc.add_paragraph(
+                        "Los resultados generales muestran que ninguna estacion supera "
+                        "los 3 minutos promedio para la atencion de los usuarios."
+                    )
+                else:
+                    doc.add_paragraph(
+                        f"Se observa que {fila_critica['Peaje']} - {fila_critica['Sentido de Circulacion']} "
+                        f"alcanza {valor_critico:.2f} minutos promedio, superando el umbral de 3 minutos."
+                    )
+
+    doc.add_page_break()
+
+    # ═══════════════ CAPITULO VI: CONCLUSIONES ═══════════════
+    doc.add_heading("CAPITULO VI: CONCLUSIONES", level=1)
+
+    tabla_tec_peaje = informe_package.get("tabla_tec_peaje", pd.DataFrame())
+    col_tec = "Tiempo de Espera en Cola - TEC"
+    if not tabla_tec_peaje.empty and col_tec in tabla_tec_peaje.columns:
+        tabla_tec_peaje[col_tec] = pd.to_numeric(tabla_tec_peaje[col_tec], errors="coerce")
+        fila_critica = tabla_tec_peaje.sort_values(col_tec, ascending=False).iloc[0]
+        valor_critico = float(fila_critica[col_tec])
+        if valor_critico <= 3:
+            doc.add_paragraph(
+                "Del presente Informe, se evidencia que los valores obtenidos por los niveles de servicio "
+                "que el Concesionario tiene actualmente se encuentran dentro de los niveles que deben ser cumplidos, "
+                "debido a que durante el periodo muestreado en cada unidad de peaje/pesaje el promedio de la muestra "
+                "no supero los 3 minutos; lo cual no amerita por ahora la modificacion del sistema de atencion."
+            )
+        else:
+            doc.add_paragraph(
+                f"Del presente Informe, se evidencia que los valores obtenidos por los niveles de servicio "
+                f"superan el umbral esperado en {fila_critica['Peaje']} - {fila_critica['Sentido de Circulacion']}, "
+                f"donde el promedio alcanzado fue de {valor_critico:.2f} minutos; por lo que corresponde revisar "
+                f"las condiciones operativas del sistema de atencion."
+            )
+    else:
+        doc.add_paragraph("No se cuenta con resultados suficientes para emitir conclusiones.")
+
+    # Bullets de resumen narrativo
+    texto_informe = informe_package.get("texto_informe")
+    if texto_informe is not None and not texto_informe.empty:
+        doc.add_paragraph("")
+        for texto in texto_informe["Texto sugerido para informe"]:
+            doc.add_paragraph(str(texto), style="List Bullet")
+
+    doc.add_page_break()
+
+    # ═══════════════ ANEXOS ═══════════════
+    doc.add_heading("ANEXOS", level=1)
+    doc.add_heading("Anexo 01: Formato utilizado para relevar la informacion de campo", level=3)
+    doc.add_paragraph("(Adjuntar formato de campo utilizado)")
+    doc.add_heading("Anexo 02: Planilla de registro y calculo", level=3)
+    doc.add_paragraph("(Adjuntar planilla de registro)")
 
     output = BytesIO()
     doc.save(output)
     output.seek(0)
     return output.getvalue()
+
+
+def to_docx_bytes(report_label: str, informe_package: dict[str, object]) -> bytes:
+    return to_generated_docx_bytes(report_label, informe_package)
 
 
 def to_zip_bytes(sheets: dict[str, pd.DataFrame], excel_bytes: bytes) -> bytes:
